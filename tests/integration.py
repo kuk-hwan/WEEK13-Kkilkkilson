@@ -90,20 +90,30 @@ class FirstResponseTests(unittest.TestCase):
         self.content = "<!doctype html><h1>첫 번째 HTTP 응답 🎉</h1>\n".encode()
         (self.root / "index.html").write_bytes(self.content)
 
-    def assert_html(self, result, expected=None):
+    def assert_server_header(self, headers, port):
+        self.assertEqual(headers["Server"], f"server-{port}")
+
+    def assert_html(self, result, port, expected=None):
         status, headers, body = result
         expected = self.content if expected is None else expected
         self.assertEqual(status, "HTTP/1.1 200 OK")
         self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
         self.assertEqual(int(headers["Content-Length"]), len(expected))
         self.assertEqual(headers["Connection"], "close")
-        self.assertTrue(headers["Server"].startswith("server-"))
+        self.assert_server_header(headers, port)
         self.assertIsNotNone(parsedate_to_datetime(headers["Date"]))
         self.assertEqual(body, expected)
 
     def test_get_root_and_headers(self):
         with running_server(self.root) as port:
-            self.assert_html(request(port))
+            self.assert_html(request(port), port)
+
+    def test_server_header_tracks_listening_port(self):
+        with running_server(self.root) as first:
+            with running_server(self.root) as second:
+                self.assertNotEqual(first, second)
+                self.assert_html(request(first), first)
+                self.assert_html(request(second), second)
 
     def test_fragmented_request_waits_for_complete_head(self):
         with running_server(self.root) as port:
@@ -115,11 +125,11 @@ class FirstResponseTests(unittest.TestCase):
                 client.sendall(b"host\r\n\r")
                 client.sendall(b"\n")
                 client.settimeout(3)
-                self.assert_html(read_response(client))
+                self.assert_html(read_response(client), port)
 
     def test_lf_and_http10(self):
         with running_server(self.root) as port:
-            self.assert_html(request(port, (b"GET / HTTP/1.0\nHost: localhost\n\n",)))
+            self.assert_html(request(port, (b"GET / HTTP/1.0\nHost: localhost\n\n",)), port)
 
     def test_other_requests_are_404_in_bootstrap(self):
         with running_server(self.root) as port:
@@ -128,13 +138,14 @@ class FirstResponseTests(unittest.TestCase):
                     status, headers, body = request(port, (line + b"\r\nHost: localhost\r\n\r\n",))
                     self.assertEqual(status, "HTTP/1.1 404 Not Found")
                     self.assertEqual(int(headers["Content-Length"]), len(body))
+                    self.assert_server_header(headers, port)
 
     def test_large_and_empty_file(self):
         for content in (b"", bytes(range(256)) * 16384):
             with self.subTest(size=len(content)):
                 (self.root / "index.html").write_bytes(content)
                 with running_server(self.root) as port:
-                    self.assert_html(request(port), expected=content)
+                    self.assert_html(request(port), port, expected=content)
 
     def test_port_collision_is_runtime_error(self):
         with socket.socket() as occupied:
@@ -165,7 +176,7 @@ class FirstResponseTests(unittest.TestCase):
         port = free_port()
         for _ in range(2):
             with running_server(self.root, port):
-                self.assert_html(request(port))
+                self.assert_html(request(port), port)
 
     def test_disconnect_does_not_kill_server(self):
         content = b"x" * (4 * 1024 * 1024)
@@ -174,13 +185,14 @@ class FirstResponseTests(unittest.TestCase):
             with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
                 client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                 client.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            self.assert_html(request(port), expected=content)
+            self.assert_html(request(port), port, expected=content)
 
     def test_header_limit_and_recovery(self):
         with running_server(self.root) as port:
-            status, _, _ = request(port, (b"G" * 16384,))
+            status, headers, _ = request(port, (b"G" * 16384,))
             self.assertEqual(status, "HTTP/1.1 431 Request Header Fields Too Large")
-            self.assert_html(request(port))
+            self.assert_server_header(headers, port)
+            self.assert_html(request(port), port)
 
     def test_partial_request_has_absolute_deadline(self):
         with running_server(self.root) as port:
@@ -189,12 +201,13 @@ class FirstResponseTests(unittest.TestCase):
                 client.sendall(b"G")
                 time.sleep(3)
                 client.sendall(b"E")
-                status, _, _ = read_response(client)
+                status, headers, _ = read_response(client)
                 elapsed = time.monotonic() - start
                 self.assertEqual(status, "HTTP/1.1 408 Request Timeout")
+                self.assert_server_header(headers, port)
                 self.assertGreaterEqual(elapsed, 4.5)
                 self.assertLess(elapsed, 6.5)
-            self.assert_html(request(port))
+            self.assert_html(request(port), port)
 
     def test_symlink_or_missing_index_is_forbidden(self):
         (self.root / "index.html").unlink()
@@ -203,8 +216,9 @@ class FirstResponseTests(unittest.TestCase):
                 if symlink:
                     (self.root / "index.html").symlink_to("/etc/passwd")
                 with running_server(self.root) as port:
-                    status, _, _ = request(port)
+                    status, headers, _ = request(port)
                     self.assertEqual(status, "HTTP/1.1 403 Forbidden")
+                    self.assert_server_header(headers, port)
 
 
 if __name__ == "__main__":
