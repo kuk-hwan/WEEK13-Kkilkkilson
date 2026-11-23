@@ -1,0 +1,34 @@
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # AGENTS.md의 "Git 규칙"과 .githooks/commit-msg에 맞춘다
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            test
+            chore
+            ci
+            perf
+          requireScope: false
+          headerPattern: '^(\w*)(?:\(([a-z0-9-]+)\))?!?: (.*)$'
+          headerPatternCorrespondence: type, scope, subject
+          subjectPattern: ^.{0,49}[^.]$
+          subjectPatternError: |
+            PR 제목의 요약 "{subject}"이 규칙에 안 맞아요.
+            요약은 50자 안쪽, 끝에 마침표 없이 써 주세요. 예: feat(http): 정적 파일 응답 추가
