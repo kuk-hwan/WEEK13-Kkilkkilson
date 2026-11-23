@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu:
+    name: ci-ubuntu
+    runs-on: ubuntu-24.04
+    env:
+      CLANG_FORMAT: clang-format-18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install formatter
+        run: sudo apt-get update -qq && sudo apt-get install -y clang-format-18
+      - name: Format
+        run: make format-check
+      - name: Build
+        run: make
+      - name: Test
+        run: make test
+      - name: Sanitizers
+        run: make sanitize-test
+
+  macos:
+    name: ci-macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Test
+        run: make test

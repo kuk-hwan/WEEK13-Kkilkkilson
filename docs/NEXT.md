@@ -1,5 +1,47 @@
 # 다음 할 일
 
+## 프로젝트 보드
+
+작업 현황은 [Week 13 Project](https://github.com/users/kuk-hwan/projects/12)에서 확인한다.
+
+- [보드](https://github.com/users/kuk-hwan/projects/12/views/1): Status별로 Todo, In Progress,
+  In Review, Done을 본다.
+- [사람별](https://github.com/users/kuk-hwan/projects/12/views/2): 담당자로 묶고 숫자 필드
+  `차례`를 오름차순으로 정렬한다. Done은 숨긴다.
+
+### 다음 할 일 찾는 법
+
+1. **사람별** 보기에서 내 이름 아래의 **Todo**를 찾는다.
+2. `차례`가 가장 작고, 이슈의 **Blocked by**가 모두 닫힌 일을 고른다.
+3. 시작할 때 **In Progress**, PR로 검토받을 때 **In Review**로 옮긴다.
+   같은 차례의 일도 각자의 막힘 관계를 확인한 뒤 시작한다.
+
+### 담당과 차례
+
+괄호 숫자는 막힘 관계로 계산한 가장 이른 시작 차례다. 숫자는 이슈 번호가 아니다.
+
+| 갈래 | 담당 | 이슈(차례) |
+|---|---|---|
+| A 기반·검사 | [@kuk-hwan](https://github.com/kuk-hwan) | [#3](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/3)(1) → [#4](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/4)(2) → [#6](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/6)(3) → [#14](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/14)(7) |
+| B HTTP·프록시 | [@Pancheble](https://github.com/Pancheble) | [#5](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/5)(3) → [#10](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/10)(4) → [#11](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/11)(5) → [#13](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/13)(6) |
+| C 동시성·데모·문서 | [@Jongeume](https://github.com/Jongeume) | [#7](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/7)(3) → [#8](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/8)(4) → [#9](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/9)(5) → [#12](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/12)(6) → [#15](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/15)(7) → [#16](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/16)(8) |
+
+### 상태 자동화
+
+이 저장소의 새 이슈는 보드에 자동 추가되고 Todo로 시작한다. 연결 PR이 생기면
+In Review, PR이 머지되거나 이슈가 닫히면 Done으로 옮긴다. 보드의 이슈 자동 종료는
+꺼 두어 상태를 옮기는 작업만으로 이슈 자체가 닫히지 않게 한다.
+
+완료할 이슈는 PR 본문에 `Closes #이슈번호`로 연결한다(예: `Closes #3`).
+기본 브랜치 `dev`에 PR이 머지되어 해당 이슈가 닫히면 보드도 Done으로 이동한다.
+`Refs #이슈번호`는 참조만 남기며 머지할 때 이슈를 자동 종료하지 않는다.
+
+후속 구현은 #4(서버가 뜨고 첫 응답)를 시작점으로 삼는다. #4가 머지되면
+#5(HTTP), #6(정적 파일), #7(동시성) 갈래를 담당자별로 진행한다. 실제 시작 전에는
+해당 이슈의 `Blocked by`가 모두 닫혔는지 확인한다.
+
+## 전체 작업 방식
+
 작업 방식은 하위 세션이다(AGENTS.md "작업 방식"). 메인 세션은 하위 세션을 띄우고 결과를 확인한다.
 
 1. **첫 안**: `docs/idea.md`에 무엇을 만들지 몇 줄 쓴다.
