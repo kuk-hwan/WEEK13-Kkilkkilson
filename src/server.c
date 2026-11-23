@@ -1,3 +1,7 @@
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+/* Darwin hides O_NOFOLLOW in its strict POSIX namespace. */
+#define _DARWIN_C_SOURCE
+#endif
 #include "mini_webserver.h"
 
 #include <errno.h>
