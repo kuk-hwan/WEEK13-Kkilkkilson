@@ -1,5 +1,6 @@
 CC = cc
 CLANG_FORMAT ?= clang-format
+PYTHON ?= python3
 BUILD_DIR ?= build
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -Iinclude
 REQUIRED_CFLAGS = -std=c11 -Wall -Wextra -Werror -pedantic
@@ -28,8 +29,9 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(REQUIRED_CFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
-test: $(BUILD_DIR)/test-unit
+test: $(BUILD_DIR)/test-unit $(BUILD_DIR)/mini-webserver
 	$(BUILD_DIR)/test-unit $(TEST_ARGS)
+	$(PYTHON) tests/integration.py --binary $(BUILD_DIR)/mini-webserver
 
 sanitize-test:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/sanitize \
