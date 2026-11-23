@@ -52,5 +52,6 @@ make clean
 - `pr-title`: 기존 PR 제목 규칙 검사.
 
 `dev`로 PR을 보내고 사람의 리뷰·머지 결정을 기다린다. 관리자 설정의 필수 검사에는
-위 job 이름을 사용한다. 프로젝트 보드와 다음 작업을 찾는 방법은
+위 job 이름을 사용한다. 작업 현황은
+[Week 13 Project](https://github.com/users/kuk-hwan/projects/12), 담당과 다음 작업을 찾는 방법은
 [`docs/NEXT.md`](docs/NEXT.md)를 확인한다. Valgrind·부하 측정 타깃은 3단계에서 추가한다.
