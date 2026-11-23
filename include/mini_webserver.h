@@ -175,6 +175,8 @@ int mw_http_send_response(int fd, const mw_response_t *response, bool head_only,
                           mw_deadline_t deadline);
 int mw_http_send_error(int fd, int status, bool head_only, mw_deadline_t deadline);
 const char *mw_http_status_reason(int status);
+/* Server header value. Call once before workers start; read-only afterwards. */
+void mw_http_set_server_name(const char *name);
 /* Complete upstream bytes only: returns 0, or the HTTP error to send (502). */
 int mw_http_parse_upstream_response(const unsigned char *bytes, size_t length, bool head_only,
                                     mw_upstream_response_t *response);
