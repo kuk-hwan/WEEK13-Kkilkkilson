@@ -69,7 +69,7 @@
 |---|---|
 | 접두사 | Conventional Commits: feat, fix, docs, refactor, test, chore, ci, perf |
 | 커밋 제목 | `접두사(범위): 요약`. 범위는 선택(소문자, 숫자, 하이픈). 요약은 한국어, 50자 안쪽(글자 수로 셈), 끝 마침표 없음 |
-| 범위 이름 | 구성 요소 이름. to-spec 뒤에 여기 적는다 |
+| 범위 이름 | 구성 요소 이름: `server`, `config`, `net`, `pool`, `http`, `static`, `app`, `proxy` (`docs/spec.md` "모듈") |
 | 커밋 본문 | 왜 바꿨는지. 마지막 줄에 `Refs #이슈` |
 | 깨지는 변경 | 제목에 `!`, 본문에 `BREAKING CHANGE:` |
 | 브랜치 이름 | `접두사/이슈번호-짧은-영문-설명` (예: `feat/12-static-files`) |
