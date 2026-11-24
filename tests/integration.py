@@ -725,6 +725,85 @@ class ProxyTests(unittest.TestCase):
             status, _, body = request(proxy)
             self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
 
+    def get(self, proxy, path=b"/api/x", version=b"1.1"):
+        return request(proxy, (b"GET " + path + b" HTTP/" + version +
+                               b"\r\nHost: h\r\nConnection: close\r\n\r\n",))
+
+    def test_silent_backend_is_504_after_three_seconds_and_next_request_works(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        with self.proxy_to(listener.getsockname()[1]) as proxy:
+            started = time.monotonic()
+            status, headers, body = self.get(proxy)
+            elapsed = time.monotonic() - started
+            self.assertEqual(status, "HTTP/1.1 504 Gateway Timeout")
+            self.assertEqual(int(headers["Content-Length"]), len(body))
+            self.assertTrue(2.8 <= elapsed < 4.5, elapsed)
+            status, _, body = request(proxy)
+            self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
+
+    def test_broken_or_cut_responses_are_502_and_never_retried(self):
+        replies = [b"garbage\r\n\r\n",
+                   b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc",
+                   b"HTTP/1.1 200 OK\r\nContent-Len",
+                   b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab",
+                   b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n",
+                   b""]
+        for reply in replies:
+            with self.subTest(reply=reply), fake_backend(reply) as (backend, received):
+                with self.proxy_to(backend) as proxy:
+                    status, headers, body = self.get(proxy)
+                    self.assertEqual(status, "HTTP/1.1 502 Bad Gateway")
+                    self.assertEqual(int(headers["Content-Length"]), len(body))
+                self.assertEqual(len(received), 1)
+
+    def test_response_over_8_mib_is_502_and_exactly_8_mib_passes(self):
+        limit = 8 * 1024 * 1024
+        head = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n"
+        size = limit - len(head % limit)
+        exact = head % size + b"x" * size
+        self.assertEqual(len(exact), limit)
+        with fake_backend(exact) as (backend, _), self.proxy_to(backend) as proxy:
+            status, _, body = self.get(proxy)
+            self.assertEqual((status, len(body)), (OK_STATUS, size))
+        with fake_backend(exact + b"x") as (backend, _), self.proxy_to(backend) as proxy:
+            status, _, _ = self.get(proxy)
+            self.assertEqual(status, "HTTP/1.1 502 Bad Gateway")
+
+    def test_chunked_reply_reaches_an_http10_client_with_content_length(self):
+        reply = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-T\r\n\r\n"
+                 b"3\r\nabc\r\n4;e=1\r\ndefg\r\n0\r\nX-T: v\r\n\r\n")
+        with fake_backend(reply) as (backend, _), self.proxy_to(backend) as proxy:
+            status, headers, body = self.get(proxy, version=b"1.0")
+            self.assertEqual((status, body), (OK_STATUS, b"abcdefg"))
+            self.assertEqual(headers["Content-Length"], "7")
+            self.assertNotIn("Transfer-Encoding", headers)
+            self.assertNotIn("X-T", headers)
+
+    def test_set_cookie_stays_separate(self):
+        reply = (b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n"
+                 b"Content-Length: 2\r\n\r\nok")
+        with fake_backend(reply) as (backend, _), self.proxy_to(backend) as proxy:
+            with socket.create_connection(("127.0.0.1", proxy), timeout=5) as client:
+                client.sendall(b"GET /api/x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+                raw = bytearray()
+                while chunk := client.recv(65536):
+                    raw.extend(chunk)
+        head = bytes(raw).partition(b"\r\n\r\n")[0].split(b"\r\n")
+        self.assertEqual([l for l in head if l.lower().startswith(b"set-cookie")],
+                         [b"Set-Cookie: a=1", b"Set-Cookie: b=2"])
+
+    def test_bodyless_statuses_and_head(self):
+        for reply, method in ((b"HTTP/1.1 204 No Content\r\n\r\n", b"GET"),
+                              (b"HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\n", b"GET"),
+                              (b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", b"HEAD")):
+            with self.subTest(reply=reply), fake_backend(reply) as (backend, _):
+                with self.proxy_to(backend) as proxy:
+                    status, _, body = request(
+                        proxy, (method + b" /api/x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+                    self.assertEqual(body, b"")
+                    self.assertEqual(status.split(" ")[1], reply.split(b" ")[1].decode())
+
     def test_invalid_route_is_argument_error(self):
         for route in ("api/=127.0.0.1:8001", "/api/", "/api/=127.0.0.1", "/api/=127.0.0.1:",
                       "/api/=127.0.0.1:0", "/api/=127.0.0.1:65536", "/api/=:8001",

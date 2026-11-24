@@ -41,6 +41,7 @@ bool test_http_limits(void);
 bool test_http_response_headers(void);
 bool test_http_read_request(void);
 bool test_http_upstream_response(void);
+bool test_http_upstream_chunked(void);
 bool test_http_hop_by_hop(void);
 bool test_proxy_match_route(void);
 bool test_proxy_round_robin(void);
