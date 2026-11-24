@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -207,10 +208,35 @@ static bool serve_dynamic(const mw_config_t *config, int fd, const mw_request_t 
     return false;
 }
 
-static void handle_connection(mw_config_t *config, int client) {
+/*
+ * Wait for the next request on a keep-alive connection, in short slices so a shutdown closes an
+ * idle connection at once instead of after its idle timeout. Returns false to close it.
+ */
+#define IDLE_POLL_SLICE_MS 100
+
+static bool wait_for_next_request(const mw_runtime_t *runtime, int client) {
+    mw_deadline_t deadline = mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS;
+    while (!atomic_load(&runtime->stopping)) {
+        struct pollfd entry = {.fd = client, .events = POLLIN};
+        int result = poll(&entry, 1, IDLE_POLL_SLICE_MS);
+        if (result > 0 || (result == -1 && errno != EINTR)) {
+            return true; /* data, EOF or an error: the read below sorts it out */
+        }
+        if (mw_net_now_ms() >= deadline) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static void handle_connection(mw_runtime_t *runtime, int client) {
+    mw_config_t *config = runtime->config;
     mw_buffer_t input = {NULL, 0, 0};
     mw_request_t request;
     for (size_t served = 1;; served++) {
+        if (served > 1 && input.length == 0 && !wait_for_next_request(runtime, client)) {
+            break;
+        }
         int result = mw_http_read_request(client, &input, &request,
                                           mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
         mw_route_t *route =
@@ -218,7 +244,8 @@ static void handle_connection(mw_config_t *config, int client) {
                         : NULL;
         if (route != NULL) {
             /* Only proxied responses keep the connection so far; #9 extends it to the rest. */
-            bool keep = request.keep_alive && served < MW_MAX_REQUESTS_PER_CONNECTION;
+            bool keep = request.keep_alive && served < MW_MAX_REQUESTS_PER_CONNECTION &&
+                        !atomic_load(&runtime->stopping);
             if (mw_proxy_serve(config, route, client, &request, keep,
                                mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS) != 0 ||
                 !keep) {
@@ -254,41 +281,77 @@ static void handle_connection(mw_config_t *config, int client) {
 
 /* Wrapper over the bootstrap handler above; #5 and #6 replace it with the real app module. */
 void mw_app_handle_connection(mw_runtime_t *runtime, int client_fd) {
-    handle_connection(runtime->config, client_fd);
+    handle_connection(runtime, client_fd);
 }
 
-int mw_server_run(mw_config_t *config) {
-    struct sigaction ignore = {.sa_handler = SIG_IGN};
-    struct sigaction previous;
-    (void)sigemptyset(&ignore.sa_mask);
-    if (sigaction(SIGPIPE, &ignore, &previous) == -1) {
-        perror("SIGPIPE");
-        return MW_EXIT_RUNTIME_ERROR;
+/* The handler may only set the flag and write one byte; both are async-signal-safe. */
+static volatile sig_atomic_t stop_requested;
+static volatile sig_atomic_t wake_fd = -1;
+
+static void on_stop_signal(int signal_number) {
+    (void)signal_number;
+    int saved = errno;
+    stop_requested = 1;
+    if (wake_fd != -1) {
+        char byte = 1;
+        ssize_t written = write(wake_fd, &byte, 1);
+        (void)written; /* a full pipe already holds a wake-up byte */
     }
-    mw_http_set_server_name(config->name);
-    int listener = mw_net_listen(config);
-    if (listener == -1) {
-        perror("listener (socket/bind/listen)");
-        (void)sigaction(SIGPIPE, &previous, NULL);
-        return MW_EXIT_RUNTIME_ERROR;
+    errno = saved;
+}
+
+static int set_nonblocking_cloexec(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags == -1 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        return -1;
     }
-    mw_runtime_t runtime = {.config = config};
-    atomic_init(&runtime.stopping, false);
-    mw_pool_t *pool = NULL;
-    if (mw_pool_create(&runtime, &pool) == -1) {
-        perror("thread pool");
-        (void)close(listener);
-        (void)sigaction(SIGPIPE, &previous, NULL);
-        return MW_EXIT_RUNTIME_ERROR;
+    int fd_flags = fcntl(fd, F_GETFD);
+    return fd_flags == -1 ? -1 : fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC);
+}
+
+static int open_wake_pipe(int pipe_fds[2]) {
+    if (pipe(pipe_fds) == -1) {
+        return -1;
     }
-    fprintf(stderr, "Listening on http://%s:%u (root: %s)\n", config->host,
-            (unsigned int)config->port, config->root);
-    for (;;) {
+    for (int i = 0; i < 2; i++) {
+        if (set_nonblocking_cloexec(pipe_fds[i]) == -1) {
+            int saved = errno;
+            (void)close(pipe_fds[0]);
+            (void)close(pipe_fds[1]);
+            errno = saved;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Accept until a stop signal arrives. Returns false if the listener itself broke. */
+static bool accept_loop(int listener, int wake_read, mw_pool_t *pool) {
+    while (!stop_requested) {
+        struct pollfd entries[2] = {{.fd = listener, .events = POLLIN},
+                                    {.fd = wake_read, .events = POLLIN}};
+        if (poll(entries, 2, -1) == -1) {
+            if (errno != EINTR) {
+                perror("poll");
+                return false;
+            }
+            continue;
+        }
+        if (stop_requested || (entries[1].revents & POLLIN) != 0) {
+            break;
+        }
+        if ((entries[0].revents & (POLLERR | POLLNVAL)) != 0) {
+            fprintf(stderr, "accept: listener failed\n");
+            return false;
+        }
+        if ((entries[0].revents & POLLIN) == 0) {
+            continue;
+        }
         int client = accept(listener, NULL, NULL);
         if (client == -1) {
             if (!accept_error_is_transient(errno)) {
                 perror("accept");
-                break;
+                return false;
             }
             if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
                 /* Out of descriptors or memory: back off briefly instead of spinning. */
@@ -303,8 +366,74 @@ int mw_server_run(mw_config_t *config) {
             (void)close(client);
         }
     }
-    mw_pool_destroy(pool);
-    (void)close(listener);
-    (void)sigaction(SIGPIPE, &previous, NULL);
-    return MW_EXIT_RUNTIME_ERROR;
+    return true;
+}
+
+int mw_server_run(mw_config_t *config) {
+    struct sigaction ignore = {.sa_handler = SIG_IGN};
+    struct sigaction previous_pipe;
+    (void)sigemptyset(&ignore.sa_mask);
+    if (sigaction(SIGPIPE, &ignore, &previous_pipe) == -1) {
+        perror("SIGPIPE");
+        return MW_EXIT_RUNTIME_ERROR;
+    }
+    mw_http_set_server_name(config->name);
+    int listener = mw_net_listen(config);
+    if (listener == -1) {
+        perror("listener (socket/bind/listen)");
+        (void)sigaction(SIGPIPE, &previous_pipe, NULL);
+        return MW_EXIT_RUNTIME_ERROR;
+    }
+    /* poll says readable, but the connection may be gone by accept: never block there. */
+    int wake[2];
+    if (set_nonblocking_cloexec(listener) == -1 || open_wake_pipe(wake) == -1) {
+        perror("listener setup");
+        (void)close(listener);
+        (void)sigaction(SIGPIPE, &previous_pipe, NULL);
+        return MW_EXIT_RUNTIME_ERROR;
+    }
+    stop_requested = 0;
+    wake_fd = wake[1];
+    struct sigaction stop = {.sa_handler = on_stop_signal};
+    struct sigaction previous_int;
+    struct sigaction previous_term;
+    (void)sigemptyset(&stop.sa_mask);
+    bool int_set = sigaction(SIGINT, &stop, &previous_int) == 0;
+    bool term_set = int_set && sigaction(SIGTERM, &stop, &previous_term) == 0;
+    mw_runtime_t runtime = {.config = config};
+    atomic_init(&runtime.stopping, false);
+    mw_pool_t *pool = NULL;
+    int result = MW_EXIT_RUNTIME_ERROR;
+    if (!term_set) {
+        perror("SIGINT/SIGTERM");
+    } else if (mw_pool_create(&runtime, &pool) == -1) {
+        perror("thread pool");
+    } else {
+        fprintf(stderr, "Listening on http://%s:%u (root: %s)\n", config->host,
+                (unsigned int)config->port, config->root);
+        bool clean = accept_loop(listener, wake[0], pool);
+        atomic_store(&runtime.stopping, true);
+        /* Order: stop accepting, drop queued connections, let running requests finish
+         * (mw_pool_destroy stops the pool and joins the workers), then free everything. */
+        (void)close(listener);
+        listener = -1;
+        mw_pool_destroy(pool);
+        if (clean) {
+            result = MW_EXIT_SUCCESS;
+        }
+    }
+    if (listener != -1) {
+        (void)close(listener);
+    }
+    if (term_set) {
+        (void)sigaction(SIGTERM, &previous_term, NULL);
+    }
+    if (int_set) {
+        (void)sigaction(SIGINT, &previous_int, NULL);
+    }
+    wake_fd = -1;
+    (void)close(wake[0]);
+    (void)close(wake[1]);
+    (void)sigaction(SIGPIPE, &previous_pipe, NULL);
+    return result;
 }
