@@ -222,6 +222,7 @@ static void handle_connection(mw_runtime_t *runtime, int client) {
     mw_request_t request;
     char peer[INET_ADDRSTRLEN];
     peer_name(client, peer, sizeof(peer));
+    mw_net_count_writes_to(client);
     for (size_t served = 1;; served++) {
         if (served > 1 && input.length == 0 && !wait_for_next_request(runtime, client)) {
             break;
@@ -264,6 +265,7 @@ static void handle_connection(mw_runtime_t *runtime, int client) {
         memmove(input.data, input.data + used, input.length - used);
         input.length -= used;
     }
+    mw_net_count_writes_to(-1);
     mw_http_buffer_destroy(&input);
 }
 

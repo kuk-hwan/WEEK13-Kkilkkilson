@@ -159,7 +159,9 @@ int mw_net_listen(const mw_config_t *config);
 int mw_net_connect(const mw_backend_t *backend, mw_deadline_t deadline);
 ssize_t mw_net_read(int fd, void *buffer, size_t capacity, mw_deadline_t deadline);
 int mw_net_write_all(int fd, const void *buffer, size_t length, mw_deadline_t deadline);
-/* Bytes mw_net_write_all has sent on the calling thread so far; subtract two readings. */
+/* Count the bytes mw_net_write_all sends to `fd` on the calling thread (one fd; -1 stops). */
+void mw_net_count_writes_to(int fd);
+/* The count so far; subtract two readings. Writes to other fds, e.g. a backend, are excluded. */
 uint64_t mw_net_bytes_written(void);
 
 /* pool: submit takes ownership of fd only when true. Workers close owned FDs. */

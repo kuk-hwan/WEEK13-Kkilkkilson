@@ -1111,39 +1111,72 @@ class KeepAliveTests(unittest.TestCase):
                 self.assertTrue(client.is_closed(3))  # far below the 5 s idle limit
             self.assertEqual(wait_exit(process), 0)
 
-    def test_every_request_gets_one_access_log_line(self):
+    @contextmanager
+    def logged_server(self, extra_args=()):
+        """Starts a server and yields (port, read_lines); read_lines stops it and returns the
+        access-log lines (without the startup line)."""
         with tempfile.TemporaryFile(mode="w+b") as log:
             port = free_port()
             process = subprocess.Popen(
                 [str(BINARY), "--host", "127.0.0.1", "--port", str(port), "--root",
-                 str(self.root)], stdout=subprocess.DEVNULL, stderr=log)
+                 str(self.root), *extra_args], stdout=subprocess.DEVNULL, stderr=log)
+
+            def read_lines():
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                log.seek(0)
+                return log.read().decode().splitlines()[1:]
+
             try:
                 deadline = time.monotonic() + 10
                 while b"Listening on" not in os.pread(log.fileno(), 4096, 0):
                     self.assertIsNone(process.poll(), "Server exited during startup")
                     self.assertLess(time.monotonic(), deadline, "Server never became ready")
                     time.sleep(0.02)
-                with BufferedConnection(port) as client:
-                    client.send(self.GET)
-                    raw_ok = client.response()[3]
-                    client.send(b"GET /missing?x=1 HTTP/1.1\r\nHost: h\r\n\r\n")
-                    raw_missing = client.response()[3]
-                with BufferedConnection(port) as client:
-                    client.send(b"BAD\r\n\r\n")
-                    raw_bad = client.response()[3]
+                yield port, read_lines
             finally:
-                process.terminate()
-                process.wait(timeout=5)
-            log.seek(0)
-            lines = log.read().decode().splitlines()[1:]  # first line is the startup message
-        pattern = (r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ 127\.0\.0\.1 (\S+) (\S+) (\d{3}) (\d+) "
-                   r"(\d+)ms")
-        parsed = [re.fullmatch(pattern, line) for line in lines]
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+
+    LOG_LINE = (r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ 127\.0\.0\.1 (\S+) (\S+) (\d{3}) (\d+) "
+                r"(\d+)ms")
+
+    def test_every_request_gets_one_access_log_line(self):
+        with self.logged_server() as (port, read_lines):
+            with BufferedConnection(port) as client:
+                client.send(self.GET)
+                raw_ok = client.response()[3]
+                client.send(b"GET /missing?x=1 HTTP/1.1\r\nHost: h\r\n\r\n")
+                raw_missing = client.response()[3]
+            with BufferedConnection(port) as client:
+                client.send(b"BAD\r\n\r\n")
+                raw_bad = client.response()[3]
+            lines = read_lines()
+        parsed = [re.fullmatch(self.LOG_LINE, line) for line in lines]
         self.assertEqual(len(lines), 3, lines)
         self.assertTrue(all(parsed), lines)
         self.assertEqual([m.group(1, 2, 3) for m in parsed],
                          [("GET", "/", "200"), ("GET", "/missing", "404"), ("-", "-", "400")])
         self.assertEqual([int(m.group(4)) for m in parsed], [raw_ok, raw_missing, raw_bad])
+
+    def test_proxied_request_logs_only_bytes_sent_to_the_client(self):
+        payload = b"x" * 3000  # a large request body makes the backend write easy to tell apart
+        post = b"POST /api/echo HTTP/1.1\r\nHost: h\r\nContent-Length: %d\r\n\r\n" % len(payload)
+        with running_server(self.root) as backend:
+            route = ("--route", f"/api/=127.0.0.1:{backend}")
+            with self.logged_server(route) as (proxy, read_lines):
+                with BufferedConnection(proxy) as client:
+                    client.send(post + payload)
+                    status, _, body, raw = client.response()
+                lines = read_lines()
+        self.assertEqual((status, body), (OK_STATUS, payload))
+        self.assertEqual(len(lines), 1, lines)
+        match = re.fullmatch(self.LOG_LINE, lines[0])
+        self.assertTrue(match, lines)
+        self.assertEqual(match.group(1, 2, 3), ("POST", "/api/echo", "200"))
+        self.assertEqual(int(match.group(4)), raw)
 
 
 if __name__ == "__main__":
