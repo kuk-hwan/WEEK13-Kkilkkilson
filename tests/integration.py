@@ -7,6 +7,7 @@ from email.utils import parsedate_to_datetime
 import os
 from pathlib import Path
 import select
+import signal
 import socket
 import struct
 import subprocess
@@ -29,6 +30,16 @@ def assert_no_sanitizer_errors(log):
 
 @contextmanager
 def running_server(root, port=None, extra_args=()):
+    with server_process(root, port, extra_args) as (process, port):
+        yield port
+        if process.poll() is not None:
+            raise AssertionError(f"Server stopped unexpectedly: {process.returncode}")
+
+
+@contextmanager
+def server_process(root, port=None, extra_args=()):
+    """Starts the server and yields (process, port). Cleanup terminates it if still running and
+    fails on sanitizer reports. Tests that stop the server themselves use this directly."""
     port = free_port() if port is None else port
     with tempfile.TemporaryFile(mode="w+b") as log:
         process = subprocess.Popen(
@@ -48,9 +59,7 @@ def running_server(root, port=None, extra_args=()):
                 if time.monotonic() >= deadline:
                     raise AssertionError("Server never became ready")
                 time.sleep(0.02)
-            yield port
-            if process.poll() is not None:
-                raise AssertionError(f"Server stopped unexpectedly: {process.returncode}")
+            yield process, port
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -332,6 +341,20 @@ class ConcurrencyTests(unittest.TestCase):
             finally:
                 for conn in (*stalled, busy, queued):
                     conn.close()
+
+    def test_shutdown_closes_the_queued_connection_and_finishes(self):
+        with server_process(self.root, extra_args=("--workers", "1", "--queue", "1")) as (
+                process, port):
+            busy, queued = self.fill_worker_and_queue(port)
+            try:
+                process.send_signal(signal.SIGTERM)
+                # The queued connection never reached a worker: it is closed, not served.
+                queued.settimeout(3)
+                self.assertEqual(queued.recv(1), b"")
+            finally:
+                queued.close()
+                busy.close()
+            self.assertEqual(wait_exit(process), 0)
 
     def test_pool_options_out_of_range_are_argument_errors(self):
         variants = (["--workers", "0"], ["--workers", "129"], ["--workers", "x"],
@@ -712,6 +735,106 @@ class ProxyTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(b"usage:", result.stderr)
                 assert_no_sanitizer_errors(result.stderr.decode())
+
+
+def wait_exit(process, seconds=5):
+    try:
+        return process.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(f"Server did not exit within {seconds}s of the signal") from None
+
+
+def wait_refused(port, seconds=5):
+    """Until the listener is gone (shutdown has begun); bounded, no fixed sleep."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        except ConnectionRefusedError:
+            return
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Listener still open {seconds}s after the signal")
+        time.sleep(0.02)
+
+
+class ShutdownTests(unittest.TestCase):
+    """Signals and graceful shutdown (docs/spec.md "시그널과 종료")."""
+
+    BIG = 8 * 1024 * 1024  # well above the loopback socket buffers
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-shutdown-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"x" * self.BIG)
+
+    def slow_reader(self, port):
+        """Sends GET / and reads only the response head, so the worker is mid-response."""
+        client = socket.socket()
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
+        client.settimeout(10)
+        client.connect(("127.0.0.1", port))
+        client.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        data = bytearray()
+        while b"\r\n\r\n" not in data:
+            chunk = client.recv(4096)
+            if not chunk:
+                raise AssertionError("Closed before the response head")
+            data.extend(chunk)
+        return client, bytes(data)
+
+    def test_sigint_and_sigterm_exit_zero_quickly(self):
+        for number in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=number.name):
+                with server_process(self.root) as (process, port):
+                    process.send_signal(number)
+                    self.assertEqual(wait_exit(process), 0)
+                    with self.assertRaises(ConnectionRefusedError):
+                        socket.create_connection(("127.0.0.1", port), timeout=2).close()
+
+    def test_disconnect_during_a_large_response_keeps_serving(self):
+        with running_server(self.root) as port:
+            for _ in range(5):
+                client, _ = self.slow_reader(port)  # the worker is blocked writing the body
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                client.close()
+            status, _, body = request(port)
+            self.assertEqual((status, len(body)), (OK_STATUS, self.BIG))
+
+    def test_response_in_flight_completes_after_sigterm(self):
+        with server_process(self.root) as (process, port):
+            client, received = self.slow_reader(port)
+            with client:
+                process.send_signal(signal.SIGTERM)
+                wait_refused(port)  # shutdown began while the response is still unread
+                self.assertIsNone(process.poll(), "Server left before its response was read")
+                head, _, body = received.partition(b"\r\n\r\n")
+                length = int(dict(line.split(": ", 1)
+                                  for line in head.decode("ascii").split("\r\n")[1:])
+                             ["Content-Length"])
+                body = bytearray(body)
+                while True:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+            self.assertEqual(len(body), length)
+            self.assertEqual(wait_exit(process), 0)
+
+    def test_idle_keep_alive_connection_is_closed_at_shutdown(self):
+        with running_server(self.root) as backend:
+            route = f"/api/=127.0.0.1:{backend}"
+            with server_process(self.root, extra_args=("--route", route)) as (process, proxy):
+                with socket.create_connection(("127.0.0.1", proxy), timeout=5) as client:
+                    client.sendall(b"GET /api/whoami HTTP/1.1\r\nHost: h\r\n\r\n")
+                    self.assertEqual(read_one_response(client)[0], OK_STATUS)
+                    process.send_signal(signal.SIGTERM)
+                    # Well under the 5 s idle timeout: the server closes it on its own.
+                    client.settimeout(3)
+                    self.assertEqual(client.recv(1), b"")
+                self.assertEqual(wait_exit(process), 0)
 
 
 class StaticFileTests(unittest.TestCase):
