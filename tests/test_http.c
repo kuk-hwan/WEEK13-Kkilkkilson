@@ -389,3 +389,22 @@ bool test_http_hop_by_hop(void) {
     }
     return true;
 }
+
+bool test_http_last_response(void) {
+    int pair[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    mw_deadline_t deadline = mw_net_now_ms() + 1000;
+    mw_response_t response = {.status = 204};
+    int status = 0;
+    bool keep_alive = false;
+    CHECK(mw_http_send_response(pair[0], &response, false, true, deadline) == 0);
+    mw_http_last_response(&status, &keep_alive);
+    CHECK(status == 204 && keep_alive);
+    /* Error pages always close, and the record follows the latest response. */
+    CHECK(mw_http_send_error(pair[0], 404, false, deadline) == 0);
+    mw_http_last_response(&status, &keep_alive);
+    CHECK(status == 404 && !keep_alive);
+    (void)close(pair[0]);
+    (void)close(pair[1]);
+    return true;
+}

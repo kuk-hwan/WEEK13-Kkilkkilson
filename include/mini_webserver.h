@@ -159,6 +159,10 @@ int mw_net_listen(const mw_config_t *config);
 int mw_net_connect(const mw_backend_t *backend, mw_deadline_t deadline);
 ssize_t mw_net_read(int fd, void *buffer, size_t capacity, mw_deadline_t deadline);
 int mw_net_write_all(int fd, const void *buffer, size_t length, mw_deadline_t deadline);
+/* Count the bytes mw_net_write_all sends to `fd` on the calling thread (one fd; -1 stops). */
+void mw_net_count_writes_to(int fd);
+/* The count so far; subtract two readings. Writes to other fds, e.g. a backend, are excluded. */
+uint64_t mw_net_bytes_written(void);
 
 /* pool: submit takes ownership of fd only when true. Workers close owned FDs. */
 int mw_pool_create(mw_runtime_t *runtime, mw_pool_t **pool);
@@ -175,6 +179,9 @@ int mw_http_send_response(int fd, const mw_response_t *response, bool head_only,
                           mw_deadline_t deadline);
 int mw_http_send_error(int fd, int status, bool head_only, mw_deadline_t deadline);
 const char *mw_http_status_reason(int status);
+/* What this thread's latest mw_http_send_response sent: status and whether it kept the connection.
+ */
+void mw_http_last_response(int *status, bool *keep_alive);
 /* Server header value. Call once before workers start; read-only afterwards. */
 void mw_http_set_server_name(const char *name);
 /* Complete upstream bytes only: returns 0, or the HTTP error to send (502). */
