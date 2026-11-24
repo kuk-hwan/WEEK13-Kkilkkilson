@@ -273,6 +273,17 @@ class HttpParsingTests(unittest.TestCase):
             self.assertEqual(headers["Allow"], "GET, HEAD")
             self.assert_standard_headers(headers, port, body)
 
+    def test_head_root_matches_get_without_body(self):
+        with running_server(self.root) as port:
+            get = request(port)
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+                status, headers, body = read_response(client)
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            self.assertEqual(headers["Content-Length"], get[1]["Content-Length"])
+            self.assertGreater(int(headers["Content-Length"]), 0)
+            self.assertEqual(body, b"")
+
     def test_head_has_no_body(self):
         with running_server(self.root) as port:
             with socket.create_connection(("127.0.0.1", port), timeout=5) as client:

@@ -56,26 +56,26 @@ static void send_error(int fd, int status, bool head_only) {
     }
 }
 
-static void serve_index(const mw_config_t *config, int client) {
+static void serve_index(const mw_config_t *config, int client, bool head_only) {
     int fd = openat(config->root_fd, "index.html", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd == -1) {
         int status = errno == ENOENT || errno == EACCES || errno == ELOOP ? 403 : 500;
-        send_error(client, status, false);
+        send_error(client, status, head_only);
         return;
     }
     struct stat info;
     if (fstat(fd, &info) == -1) {
         (void)close(fd);
-        send_error(client, 500, false);
+        send_error(client, 500, head_only);
         return;
     }
     if (!S_ISREG(info.st_mode) || info.st_size < 0) {
         (void)close(fd);
-        send_error(client, 403, false);
+        send_error(client, 403, head_only);
         return;
     }
     mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
-    if (send_head(config, client, 200, (uintmax_t)info.st_size, deadline) == 0) {
+    if (send_head(config, client, 200, (uintmax_t)info.st_size, deadline) == 0 && !head_only) {
         unsigned char buffer[8192];
         off_t remaining = info.st_size;
         while (remaining > 0) {
@@ -99,6 +99,8 @@ static void handle_connection(const mw_config_t *config, int client) {
     mw_request_t request;
     int result = mw_http_read_request(client, &input, &request,
                                       mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
+    bool head_only =
+        result == 0 && request.method.length == 4 && memcmp(request.method.data, "HEAD", 4) == 0;
     if (result > 0) {
         send_error(client, result, false);
     } else if (result == -1) {
@@ -108,9 +110,9 @@ static void handle_connection(const mw_config_t *config, int client) {
     } else if (request.method.length == 4 && memcmp(request.method.data, "POST", 4) == 0) {
         send_error(client, 405, false); /* no POST route yet (#10) */
     } else if (request.path.length == 1 && request.query.length == 0) {
-        serve_index(config, client);
+        serve_index(config, client, head_only);
     } else {
-        send_error(client, 404, request.method.length == 4 && request.method.data[0] == 'H');
+        send_error(client, 404, head_only);
     }
     mw_http_buffer_destroy(&input);
 }
