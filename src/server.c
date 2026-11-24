@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -94,6 +95,88 @@ static void serve_index(const mw_config_t *config, int client, bool head_only) {
     (void)close(fd);
 }
 
+static bool slice_is(mw_slice_t s, const char *literal) {
+    return s.length == strlen(literal) && memcmp(s.data, literal, s.length) == 0;
+}
+
+static mw_slice_t header_value(const mw_request_t *request, const char *name) {
+    for (size_t i = 0; i < request->headers.count; i++) {
+        const mw_slice_t key = request->headers.items[i].name;
+        if (key.length == strlen(name) &&
+            strncasecmp((const char *)key.data, name, key.length) == 0) {
+            return request->headers.items[i].value;
+        }
+    }
+    return (mw_slice_t){NULL, 0};
+}
+
+static void send_405(int fd, const char *allow, bool head_only) {
+    static const char page[] = "<!doctype html><h1>405 Method Not Allowed</h1>\n";
+    mw_response_t response = {.status = 405,
+                              .body = {(const unsigned char *)page, sizeof(page) - 1}};
+    response.headers.items[0] =
+        (mw_header_t){{(const unsigned char *)"Content-Type", 12},
+                      {(const unsigned char *)"text/html; charset=utf-8", 24}};
+    response.headers.items[1] = (mw_header_t){{(const unsigned char *)"Allow", 5},
+                                              {(const unsigned char *)allow, strlen(allow)}};
+    response.headers.count = 2;
+    (void)mw_http_send_response(fd, &response, head_only, false,
+                                mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+}
+
+/* Dynamic endpoints (#10). Returns false when the path is not one of them. */
+static bool serve_dynamic(const mw_config_t *config, int fd, const mw_request_t *request) {
+    bool get = slice_is(request->method, "GET");
+    bool head = slice_is(request->method, "HEAD");
+    mw_response_t response = {.status = 200};
+    if (slice_is(request->path, "/api/whoami")) {
+        if (!get && !head) {
+            send_405(fd, "GET, HEAD", false);
+            return true;
+        }
+        char json[512];
+        size_t n = (size_t)snprintf(json, sizeof(json), "{\"name\":\"");
+        for (const char *p = config->name; *p != '\0'; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c == '"' || c == '\\') {
+                json[n++] = '\\';
+                json[n++] = (char)c;
+            } else if (c < 0x20) {
+                n += (size_t)snprintf(json + n, 7, "\\u%04x", c);
+            } else {
+                json[n++] = (char)c;
+            }
+        }
+        n += (size_t)snprintf(json + n, sizeof(json) - n, "\",\"port\":%u}\n",
+                              (unsigned int)config->port);
+        response.body = (mw_slice_t){(const unsigned char *)json, n};
+        response.headers.items[0] = (mw_header_t){{(const unsigned char *)"Content-Type", 12},
+                                                  {(const unsigned char *)"application/json", 16}};
+        response.headers.count = 1;
+        (void)mw_http_send_response(fd, &response, head, false,
+                                    mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+        return true;
+    }
+    if (slice_is(request->path, "/api/echo")) {
+        if (!slice_is(request->method, "POST")) {
+            send_405(fd, "POST", head);
+            return true;
+        }
+        mw_slice_t type = header_value(request, "Content-Type");
+        if (type.length == 0) {
+            type = (mw_slice_t){(const unsigned char *)"application/octet-stream", 24};
+        }
+        response.body = request->body;
+        response.headers.items[0] =
+            (mw_header_t){{(const unsigned char *)"Content-Type", 12}, type};
+        response.headers.count = 1;
+        (void)mw_http_send_response(fd, &response, false, false,
+                                    mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+        return true;
+    }
+    return false;
+}
+
 static void handle_connection(const mw_config_t *config, int client) {
     mw_buffer_t input = {NULL, 0, 0};
     mw_request_t request;
@@ -107,8 +190,10 @@ static void handle_connection(const mw_config_t *config, int client) {
         if (errno == ETIMEDOUT && input.length > 0) {
             send_error(client, 408, false);
         }
+    } else if (serve_dynamic(config, client, &request)) {
+        /* answered */
     } else if (request.method.length == 4 && memcmp(request.method.data, "POST", 4) == 0) {
-        send_error(client, 405, false); /* no POST route yet (#10) */
+        send_error(client, 405, false);
     } else if (request.path.length == 1 && request.query.length == 0) {
         serve_index(config, client, head_only);
     } else {

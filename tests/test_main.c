@@ -8,6 +8,7 @@ int main(int argc, char **argv) {
                                  {"config defaults and cleanup", test_config_defaults},
                                  {"config options", test_config_options},
                                  {"config invalid arguments", test_config_errors},
+                                 {"config name", test_config_name},
                                  {"read and absolute deadline", test_net_read_deadline},
                                  {"write all with small send buffer", test_net_write_all},
                                  {"write absolute deadline", test_net_write_deadline},

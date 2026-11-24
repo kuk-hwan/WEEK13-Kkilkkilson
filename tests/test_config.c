@@ -34,6 +34,23 @@ bool test_config_options(void) {
     return true;
 }
 
+bool test_config_name(void) {
+    mw_config_t config;
+    char *args[] = {"mini-webserver", "--name", "backend-a"};
+    CHECK(mw_config_parse(&config, 3, args) == 0);
+    CHECK(strcmp(config.name, "backend-a") == 0);
+    mw_config_destroy(&config);
+    char long_name[65];
+    memset(long_name, 'n', 64);
+    long_name[64] = '\0';
+    char *bad[] = {"mini-webserver", "--name", long_name};
+    CHECK(mw_config_parse(&config, 3, bad) == 2);
+    long_name[63] = '\0';
+    CHECK(mw_config_parse(&config, 3, bad) == 0);
+    mw_config_destroy(&config);
+    return true;
+}
+
 bool test_config_errors(void) {
     mw_config_t config;
     const char *ports[] = {"", "0", "65536", "-1", "+80", " 80", "80x", "9999999999999999999999"};

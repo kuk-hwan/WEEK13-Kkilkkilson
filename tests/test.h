@@ -23,6 +23,7 @@ bool test_spec_contract(void);
 bool test_config_defaults(void);
 bool test_config_options(void);
 bool test_config_errors(void);
+bool test_config_name(void);
 bool test_net_read_deadline(void);
 bool test_net_write_all(void);
 bool test_net_write_deadline(void);
