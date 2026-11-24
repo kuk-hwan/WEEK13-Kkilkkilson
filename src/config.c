@@ -3,6 +3,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,8 @@
 static int invalid_config(mw_config_t *config, const char *message) {
     fprintf(stderr,
             "%s\nusage: mini-webserver [--host IPv4] [--port 1..65535] [--root directory]"
-            " [--workers 1..128] [--queue 1..4096] [--name name]\n",
+            " [--workers 1..128] [--queue 1..4096] [--name name]"
+            " [--route /prefix=host:port]...\n",
             message);
     mw_config_destroy(config);
     return MW_EXIT_ARGUMENT_ERROR;
@@ -50,6 +52,45 @@ static bool parse_size(const char *text, size_t minimum, size_t maximum, size_t 
         return false;
     }
     *result = value;
+    return true;
+}
+
+/* "/prefix=host:port" (one backend per route; lists come with #12). The backend address is the
+ * first getaddrinfo result, fixed for the whole run. */
+static bool parse_route(mw_config_t *config, const char *text) {
+    const char *equals = strchr(text, '=');
+    const char *colon = strrchr(text, ':');
+    if (config->route_count == MW_MAX_ROUTES || text[0] != '/' || equals == NULL || colon == NULL ||
+        colon < equals) {
+        return false;
+    }
+    size_t prefix_length = (size_t)(equals - text);
+    size_t host_length = (size_t)(colon - equals) - 1U;
+    mw_route_t *route = &config->routes[config->route_count];
+    mw_backend_t *backend = &route->backends[0];
+    if (prefix_length > MW_MAX_REQUEST_LINE || host_length == 0 ||
+        host_length > MW_MAX_BACKEND_HOST || !parse_port(colon + 1, &backend->port)) {
+        return false;
+    }
+    memcpy(route->prefix, text, prefix_length);
+    route->prefix[prefix_length] = '\0';
+    memcpy(backend->host, equals + 1, host_length);
+    backend->host[host_length] = '\0';
+    struct addrinfo hints = {.ai_socktype = SOCK_STREAM, .ai_flags = AI_NUMERICSERV};
+    struct addrinfo *found = NULL;
+    int error = getaddrinfo(backend->host, colon + 1, &hints, &found);
+    if (error != 0) {
+        fprintf(stderr, "route backend %s: %s\n", backend->host, gai_strerror(error));
+        return false;
+    }
+    memcpy(&backend->address, found->ai_addr, found->ai_addrlen);
+    backend->address_length = found->ai_addrlen;
+    freeaddrinfo(found);
+    if (pthread_mutex_init(&route->selection_lock, NULL) != 0) {
+        return false;
+    }
+    route->backend_count = 1;
+    config->route_count++;
     return true;
 }
 
@@ -93,6 +134,10 @@ int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
             name = value;
         } else if (strcmp(argv[i], "--root") == 0) {
             root = value;
+        } else if (strcmp(argv[i], "--route") == 0) {
+            if (!parse_route(config, value)) {
+                return invalid_config(config, "invalid route (/prefix=host:port)");
+            }
         } else {
             return invalid_config(config, "unknown option");
         }

@@ -540,6 +540,180 @@ class DynamicEndpointTests(unittest.TestCase):
             pass
 
 
+def read_one_response(client):
+    """One response framed by Content-Length; the connection stays open."""
+    data = bytearray()
+    while b"\r\n\r\n" not in data:
+        chunk = client.recv(65536)
+        if not chunk:
+            raise AssertionError(f"Closed before a complete head: {bytes(data[:200])!r}")
+        data.extend(chunk)
+    head, _, body = bytes(data).partition(b"\r\n\r\n")
+    lines = head.decode("ascii").split("\r\n")
+    headers = dict(line.split(": ", 1) for line in lines[1:])
+    body = bytearray(body)
+    while len(body) < int(headers["Content-Length"]):
+        chunk = client.recv(65536)
+        if not chunk:
+            raise AssertionError("Closed in the middle of the body")
+        body.extend(chunk)
+    return lines[0], headers, bytes(body)
+
+
+@contextmanager
+def fake_backend(reply):
+    """Backend that records each raw request (head + Content-Length body), answers `reply`
+    and closes. Yields (port, received)."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(0.1)
+    received = []
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except socket.timeout:
+                continue
+            with conn:
+                conn.settimeout(5)
+                data = bytearray()
+                while b"\r\n\r\n" not in data:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                head = bytes(data).partition(b"\r\n\r\n")[0]
+                length = 0
+                for line in head.split(b"\r\n")[1:]:
+                    name, _, value = line.partition(b":")
+                    if name.strip().lower() == b"content-length":
+                        length = int(value)
+                while len(data) < len(head) + 4 + length:
+                    data.extend(conn.recv(65536))
+                received.append(bytes(data))
+                conn.sendall(reply)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield listener.getsockname()[1], received
+    finally:
+        stop.set()
+        thread.join(timeout=3)
+        listener.close()
+
+
+class ProxyTests(unittest.TestCase):
+    """One route, one backend (docs/spec.md "Reverse Proxy")."""
+
+    REPLY = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-proxy-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"<h1>front</h1>\n")
+
+    def proxy_to(self, backend_port):
+        return running_server(self.root, extra_args=("--route", f"/api/=127.0.0.1:{backend_port}"))
+
+    def test_whoami_and_echo_go_through_the_backend(self):
+        with running_server(self.root, extra_args=("--name", "backend-a")) as backend:
+            with self.proxy_to(backend) as proxy:
+                status, headers, body = request(
+                    proxy, (b"GET /api/whoami HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+                self.assertEqual(status, OK_STATUS)
+                self.assertEqual(headers["Content-Type"], "application/json")
+                self.assertEqual(json.loads(body), {"name": "backend-a", "port": backend})
+                status, headers, empty = request(
+                    proxy, (b"HEAD /api/whoami HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+                self.assertEqual((status, empty), (OK_STATUS, b""))
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+                payload = bytes(range(256)) * 64 + "한글 🎉".encode()
+                status, headers, body = request(proxy, (
+                    b"POST /api/echo HTTP/1.1\r\nHost: h\r\nConnection: close\r\n"
+                    b"Content-Length: %d\r\n\r\n" % len(payload) + payload,))
+                self.assertEqual((status, body), (OK_STATUS, payload))
+                self.assertEqual(headers["Content-Type"], "application/octet-stream")
+
+    def test_request_is_rewritten_for_the_backend(self):
+        # HTTP/1.0 in, HTTP/1.1 out. (A 1.0 client also never gets 100 Continue.)
+        raw = (b"POST /api/echo HTTP/1.0\r\nHost: front.example:8080\r\n"
+               b"Connection: close, X-Hop\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\n"
+               b"TE: trailers\r\nTrailer: X-T\r\nUpgrade: websocket\r\nX-Hop: secret\r\n"
+               b"Expect: 100-continue\r\nX-Forwarded-For: 6.6.6.6\r\nX-Keep: yes\r\n"
+               b"Content-Length: 5\r\n\r\nhello")
+        with fake_backend(self.REPLY) as (backend, received):
+            with self.proxy_to(backend) as proxy:
+                status, _, body = request(proxy, (raw,))
+        self.assertEqual((status, body), (OK_STATUS, b"ok"))
+        self.assertEqual(len(received), 1)
+        head, _, sent_body = received[0].partition(b"\r\n\r\n")
+        lines = head.decode("ascii").split("\r\n")
+        self.assertEqual(lines[0], "POST /api/echo HTTP/1.1")
+        names = [line.split(":", 1)[0].lower() for line in lines[1:]]
+        for hop in ("keep-alive", "proxy-connection", "te", "trailer", "upgrade", "x-hop", "expect"):
+            self.assertNotIn(hop, names)
+        for single in ("host", "connection", "x-forwarded-for", "content-length"):
+            self.assertEqual(names.count(single), 1, single)
+        headers = dict(line.split(": ", 1) for line in lines[1:])
+        self.assertEqual(headers["Host"], "front.example:8080")
+        self.assertEqual(headers["Connection"], "close")
+        self.assertEqual(headers["X-Forwarded-For"], "127.0.0.1")
+        self.assertEqual(headers["Content-Length"], "5")
+        self.assertEqual(headers["X-Keep"], "yes")
+        self.assertEqual(sent_body, b"hello")
+
+    def test_path_and_query_are_forwarded_unchanged(self):
+        targets = [b"/api/a%20b/./c?x=1&y=%2F", b"/api/?", b"/api/x?q=a?b&", b"/api/%ED%95%9C"]
+        with fake_backend(self.REPLY) as (backend, received):
+            with self.proxy_to(backend) as proxy:
+                for target in targets:
+                    status, _, _ = request(
+                        proxy, (b"GET " + target + b" HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+                    self.assertEqual(status, OK_STATUS)
+        self.assertEqual([r.split(b"\r\n", 1)[0] for r in received],
+                         [b"GET " + t + b" HTTP/1.1" for t in targets])
+
+    def test_one_keep_alive_connection_carries_several_requests(self):
+        with running_server(self.root, extra_args=("--name", "backend-a")) as backend:
+            with self.proxy_to(backend) as proxy:
+                with socket.create_connection(("127.0.0.1", proxy), timeout=5) as client:
+                    for _ in range(3):
+                        client.sendall(b"GET /api/whoami HTTP/1.1\r\nHost: h\r\n\r\n")
+                        status, headers, body = read_one_response(client)
+                        self.assertEqual(status, OK_STATUS)
+                        self.assertEqual(headers["Connection"], "keep-alive")
+                        self.assertEqual(json.loads(body)["name"], "backend-a")
+                    client.sendall(b"POST /api/echo HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n"
+                                   b"Connection: close\r\n\r\nbye")
+                    status, headers, body = read_response(client)  # EOF: closed after this one
+                self.assertEqual((status, body), (OK_STATUS, b"bye"))
+                self.assertEqual(headers["Connection"], "close")
+
+    def test_dead_backend_is_502_and_unrouted_paths_stay_local(self):
+        with self.proxy_to(free_port()) as proxy:
+            status, headers, body = request(
+                proxy, (b"GET /api/whoami HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+            self.assertEqual(status, "HTTP/1.1 502 Bad Gateway")
+            self.assertEqual(int(headers["Content-Length"]), len(body))
+            self.assertEqual(headers["Server"], f"server-{proxy}")
+            status, _, body = request(proxy)
+            self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
+
+    def test_invalid_route_is_argument_error(self):
+        for route in ("api/=127.0.0.1:8001", "/api/", "/api/=127.0.0.1", "/api/=127.0.0.1:",
+                      "/api/=127.0.0.1:0", "/api/=127.0.0.1:65536", "/api/=:8001",
+                      "=127.0.0.1:8001", "/api/=127.0.0.1:80x"):
+            with self.subTest(route=route):
+                result = subprocess.run([str(BINARY), "--root", str(self.root), "--route", route],
+                                        capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(b"usage:", result.stderr)
+                assert_no_sanitizer_errors(result.stderr.decode())
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)

@@ -25,6 +25,7 @@ bool test_config_options(void);
 bool test_config_errors(void);
 bool test_config_name(void);
 bool test_config_pool_options(void);
+bool test_config_route(void);
 bool test_pool_rejects_when_full_and_cleans_up(void);
 bool test_pool_create_rejects_bad_sizes(void);
 bool test_net_read_deadline(void);
@@ -37,5 +38,9 @@ bool test_http_status_codes(void);
 bool test_http_limits(void);
 bool test_http_response_headers(void);
 bool test_http_read_request(void);
+bool test_http_upstream_response(void);
+bool test_http_hop_by_hop(void);
+bool test_proxy_match_route(void);
+bool test_proxy_round_robin(void);
 
 #endif

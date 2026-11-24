@@ -258,3 +258,74 @@ bool test_http_read_request(void) {
     (void)close(pair[1]);
     return true;
 }
+
+static int parse_upstream(const char *text, bool head_only, mw_upstream_response_t *response) {
+    return mw_http_parse_upstream_response((const unsigned char *)text, strlen(text), head_only,
+                                           response);
+}
+
+bool test_http_upstream_response(void) {
+    mw_upstream_response_t response;
+    CHECK(parse_upstream("HTTP/1.1 201 Created\r\nX-A: 1\r\nContent-Length: 3\r\n"
+                         "Set-Cookie: a\r\nSet-Cookie: b\r\n\r\nabcEXTRA",
+                         false, &response) == 0);
+    CHECK(response.status == 201 && response.headers.count == 4);
+    CHECK(slice_is(response.headers.items[3].value, "b"));
+    CHECK(response.has_content_length && response.content_length == 3);
+    CHECK(response.body.length == 3 && memcmp(response.body.data, "abc", 3) == 0);
+    mw_http_upstream_destroy(&response);
+    CHECK(response.body.data == NULL && response.body.length == 0);
+
+    /* Without Content-Length the body runs to the close. LF-only lines are accepted. */
+    CHECK(parse_upstream("HTTP/1.0 200 OK\nContent-Type: text/plain\n\nuntil\r\nclose", false,
+                         &response) == 0);
+    CHECK(!response.has_content_length && response.body.length == 12);
+    CHECK(memcmp(response.body.data, "until\r\nclose", 12) == 0);
+    mw_http_upstream_destroy(&response);
+    CHECK(parse_upstream("HTTP/1.1 200\r\n\r\n", false, &response) == 0);
+    CHECK(response.status == 200 && response.body.data == NULL);
+    mw_http_upstream_destroy(&response);
+
+    /* HEAD carries no body but keeps the length for the client. */
+    CHECK(parse_upstream("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n", true, &response) == 0);
+    CHECK(response.content_length == 10 && response.body.length == 0);
+    mw_http_upstream_destroy(&response);
+
+    const char *broken[] = {"",
+                            "HTTP/1.1 200 OK\r\nX: 1\r\n",
+                            "HTTP/1.1 OK\r\n\r\n",
+                            "HTTP/2 200 OK\r\n\r\n",
+                            "HTTP/1.1 20 OK\r\n\r\n",
+                            "HTTP/1.1 2000 OK\r\n\r\n",
+                            "HTTP/1.1 099 Low\r\n\r\n",
+                            "ICY 200 OK\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\nNo-Colon\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\nX: 1\r\n folded\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\nX: a\rInjected: 1\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n",
+                            "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab",
+                            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nabc"};
+    for (size_t i = 0; i < sizeof(broken) / sizeof(broken[0]); i++) {
+        CHECK(parse_upstream(broken[i], false, &response) == 502);
+        mw_http_upstream_destroy(&response); /* safe after an error too */
+    }
+    return true;
+}
+
+bool test_http_hop_by_hop(void) {
+    mw_request_t request;
+    CHECK(parse("GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive, X-Hop\r\n\r\n", &request)
+              .state == MW_PARSE_COMPLETE);
+    const char *hop[] = {"Connection", "KEEP-ALIVE",        "proxy-connection", "TE",
+                         "Trailer",    "Transfer-Encoding", "Upgrade",          "x-hop"};
+    for (size_t i = 0; i < sizeof(hop) / sizeof(hop[0]); i++) {
+        mw_slice_t name = {(const unsigned char *)hop[i], strlen(hop[i])};
+        CHECK(mw_http_is_hop_by_hop(&request.headers, name));
+    }
+    const char *end_to_end[] = {"Host", "X-Hopper", "Set-Cookie", "Content-Type"};
+    for (size_t i = 0; i < sizeof(end_to_end) / sizeof(end_to_end[0]); i++) {
+        mw_slice_t name = {(const unsigned char *)end_to_end[i], strlen(end_to_end[i])};
+        CHECK(!mw_http_is_hop_by_hop(&request.headers, name));
+    }
+    return true;
+}

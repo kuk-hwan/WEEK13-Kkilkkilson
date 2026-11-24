@@ -79,6 +79,33 @@ int mw_net_listen(const mw_config_t *config) {
     return fd;
 }
 
+int mw_net_connect(const mw_backend_t *backend, mw_deadline_t deadline) {
+    int fd = socket(backend->address.ss_family, SOCK_STREAM, 0);
+    if (fd == -1) {
+        return -1;
+    }
+    int error = 0;
+    socklen_t length = sizeof(error);
+    if (nonblocking(fd) == -1) {
+        error = errno;
+    } else if (connect(fd, (const struct sockaddr *)&backend->address, backend->address_length) ==
+               -1) {
+        error = errno;
+        if (error == EINPROGRESS || error == EINTR) {
+            error = wait_ready(fd, POLLOUT, deadline) == -1 ? errno : 0;
+            if (error == 0 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == -1) {
+                error = errno;
+            }
+        }
+    }
+    if (error != 0) {
+        (void)close(fd);
+        errno = error;
+        return -1;
+    }
+    return fd;
+}
+
 ssize_t mw_net_read(int fd, void *buffer, size_t capacity, mw_deadline_t deadline) {
     if (capacity == 0) {
         return 0;

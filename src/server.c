@@ -207,27 +207,47 @@ static bool serve_dynamic(const mw_config_t *config, int fd, const mw_request_t 
     return false;
 }
 
-static void handle_connection(const mw_config_t *config, int client) {
+static void handle_connection(mw_config_t *config, int client) {
     mw_buffer_t input = {NULL, 0, 0};
     mw_request_t request;
-    int result = mw_http_read_request(client, &input, &request,
-                                      mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
-    bool head_only =
-        result == 0 && request.method.length == 4 && memcmp(request.method.data, "HEAD", 4) == 0;
-    if (result > 0) {
-        send_error(client, result, false);
-    } else if (result == -1) {
-        if (errno == ETIMEDOUT && input.length > 0) {
-            send_error(client, 408, false);
+    for (size_t served = 1;; served++) {
+        int result = mw_http_read_request(client, &input, &request,
+                                          mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
+        mw_route_t *route =
+            result == 0 ? mw_proxy_match_route(config->routes, config->route_count, request.path)
+                        : NULL;
+        if (route != NULL) {
+            /* Only proxied responses keep the connection so far; #9 extends it to the rest. */
+            bool keep = request.keep_alive && served < MW_MAX_REQUESTS_PER_CONNECTION;
+            if (mw_proxy_serve(config, route, client, &request, keep,
+                               mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS) != 0 ||
+                !keep) {
+                break;
+            }
+            /* Drop this request, keep any pipelined bytes behind it. */
+            size_t used = (size_t)(request.body.data - input.data) + request.body.length;
+            memmove(input.data, input.data + used, input.length - used);
+            input.length -= used;
+            continue;
         }
-    } else if (serve_dynamic(config, client, &request)) {
-        /* answered */
-    } else if (request.method.length == 4 && memcmp(request.method.data, "POST", 4) == 0) {
-        send_error(client, 405, false);
-    } else if (request.path.length == 1 && request.query.length == 0) {
-        serve_index(config, client, head_only);
-    } else {
-        send_error(client, 404, head_only);
+        bool head_only = result == 0 && request.method.length == 4 &&
+                         memcmp(request.method.data, "HEAD", 4) == 0;
+        if (result > 0) {
+            send_error(client, result, false);
+        } else if (result == -1) {
+            if (errno == ETIMEDOUT && input.length > 0) {
+                send_error(client, 408, false);
+            }
+        } else if (serve_dynamic(config, client, &request)) {
+            /* answered */
+        } else if (request.method.length == 4 && memcmp(request.method.data, "POST", 4) == 0) {
+            send_error(client, 405, false);
+        } else if (request.path.length == 1 && request.query.length == 0) {
+            serve_index(config, client, head_only);
+        } else {
+            send_error(client, 404, head_only);
+        }
+        break;
     }
     mw_http_buffer_destroy(&input);
 }
