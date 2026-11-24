@@ -14,25 +14,6 @@
 #include <time.h>
 #include <unistd.h>
 
-static const char *reason(int status) {
-    switch (status) {
-    case 200:
-        return "OK";
-    case 400:
-        return "Bad Request";
-    case 403:
-        return "Forbidden";
-    case 404:
-        return "Not Found";
-    case 408:
-        return "Request Timeout";
-    case 431:
-        return "Request Header Fields Too Large";
-    default:
-        return "Internal Server Error";
-    }
-}
-
 /* Bootstrap response code is private; #5/#6 replace it with the HTTP/static modules. */
 static int send_head(const mw_config_t *config, int fd, int status, uintmax_t length,
                      mw_deadline_t deadline) {
@@ -48,44 +29,53 @@ static int send_head(const mw_config_t *config, int fd, int status, uintmax_t le
         snprintf(head, sizeof(head),
                  "HTTP/1.1 %d %s\r\nContent-Type: text/html; charset=utf-8\r\n"
                  "Content-Length: %ju\r\nConnection: close\r\nDate: %s\r\nServer: %s\r\n\r\n",
-                 status, reason(status), length, date, config->name);
+                 status, mw_http_status_reason(status), length, date, config->name);
     if (size < 0 || (size_t)size >= sizeof(head)) {
         return -1;
     }
     return mw_net_write_all(fd, head, (size_t)size, deadline);
 }
 
-static void send_error(const mw_config_t *config, int fd, int status) {
-    char body[160];
-    int size =
-        snprintf(body, sizeof(body), "<!doctype html><h1>%d %s</h1>\n", status, reason(status));
+/*
+ * Send an error page, then drain what the client still sends (bounded) so close() does not turn
+ * unread bytes into a RST that destroys the response before the client reads it.
+ */
+static void send_error(int fd, int status, bool head_only) {
     mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
-    if (size >= 0 && (size_t)size < sizeof(body) &&
-        send_head(config, fd, status, (uintmax_t)size, deadline) == 0) {
-        (void)mw_net_write_all(fd, body, (size_t)size, deadline);
+    if (mw_http_send_error(fd, status, head_only, deadline) == -1 || shutdown(fd, SHUT_WR) == -1) {
+        return;
+    }
+    unsigned char sink[4096];
+    mw_deadline_t linger = mw_net_now_ms() + 200;
+    for (size_t drained = 0; drained < 1024U * 1024U;) {
+        ssize_t count = mw_net_read(fd, sink, sizeof(sink), linger);
+        if (count <= 0) {
+            break;
+        }
+        drained += (size_t)count;
     }
 }
 
-static void serve_index(const mw_config_t *config, int client) {
+static void serve_index(const mw_config_t *config, int client, bool head_only) {
     int fd = openat(config->root_fd, "index.html", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd == -1) {
         int status = errno == ENOENT || errno == EACCES || errno == ELOOP ? 403 : 500;
-        send_error(config, client, status);
+        send_error(client, status, head_only);
         return;
     }
     struct stat info;
     if (fstat(fd, &info) == -1) {
         (void)close(fd);
-        send_error(config, client, 500);
+        send_error(client, 500, head_only);
         return;
     }
     if (!S_ISREG(info.st_mode) || info.st_size < 0) {
         (void)close(fd);
-        send_error(config, client, 403);
+        send_error(client, 403, head_only);
         return;
     }
     mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
-    if (send_head(config, client, 200, (uintmax_t)info.st_size, deadline) == 0) {
+    if (send_head(config, client, 200, (uintmax_t)info.st_size, deadline) == 0 && !head_only) {
         unsigned char buffer[8192];
         off_t remaining = info.st_size;
         while (remaining > 0) {
@@ -104,60 +94,27 @@ static void serve_index(const mw_config_t *config, int client) {
     (void)close(fd);
 }
 
-static bool head_complete(const unsigned char *bytes, size_t size, size_t from) {
-    for (size_t i = from; i < size; i++) {
-        if (i >= 1 && bytes[i - 1] == '\n' && bytes[i] == '\n') {
-            return true;
-        }
-        if (i >= 3 && memcmp(bytes + i - 3, "\r\n\r\n", 4) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool is_root_get(const unsigned char *bytes, size_t size) {
-    const unsigned char *end = memchr(bytes, '\n', size);
-    if (end == NULL) {
-        return false;
-    }
-    size_t length = (size_t)(end - bytes);
-    if (length > 0 && bytes[length - 1] == '\r') {
-        length--;
-    }
-    const char http10[] = "GET / HTTP/1.0";
-    const char http11[] = "GET / HTTP/1.1";
-    return length == sizeof(http11) - 1 &&
-           (memcmp(bytes, http10, length) == 0 || memcmp(bytes, http11, length) == 0);
-}
-
 static void handle_connection(const mw_config_t *config, int client) {
-    unsigned char head[MW_MAX_HEADER_BYTES];
-    size_t used = 0;
-    mw_deadline_t deadline = mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS;
-    while (used < sizeof(head)) {
-        ssize_t count = mw_net_read(client, head + used, sizeof(head) - used, deadline);
-        if (count <= 0) {
-            if (count == -1 && errno == ETIMEDOUT && used > 0) {
-                send_error(config, client, 408);
-            }
-            return;
+    mw_buffer_t input = {NULL, 0, 0};
+    mw_request_t request;
+    int result = mw_http_read_request(client, &input, &request,
+                                      mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
+    bool head_only =
+        result == 0 && request.method.length == 4 && memcmp(request.method.data, "HEAD", 4) == 0;
+    if (result > 0) {
+        send_error(client, result, false);
+    } else if (result == -1) {
+        if (errno == ETIMEDOUT && input.length > 0) {
+            send_error(client, 408, false);
         }
-        if (used == 0) {
-            deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
-        }
-        size_t from = used > 3 ? used - 3 : 0;
-        used += (size_t)count;
-        if (head_complete(head, used, from)) {
-            if (is_root_get(head, used)) {
-                serve_index(config, client);
-            } else {
-                send_error(config, client, 404);
-            }
-            return;
-        }
+    } else if (request.method.length == 4 && memcmp(request.method.data, "POST", 4) == 0) {
+        send_error(client, 405, false); /* no POST route yet (#10) */
+    } else if (request.path.length == 1 && request.query.length == 0) {
+        serve_index(config, client, head_only);
+    } else {
+        send_error(client, 404, head_only);
     }
-    send_error(config, client, 431);
+    mw_http_buffer_destroy(&input);
 }
 
 int mw_server_run(mw_config_t *config) {
@@ -168,6 +125,7 @@ int mw_server_run(mw_config_t *config) {
         perror("SIGPIPE");
         return MW_EXIT_RUNTIME_ERROR;
     }
+    mw_http_set_server_name(config->name);
     int listener = mw_net_listen(config);
     if (listener == -1) {
         perror("listener (socket/bind/listen)");
