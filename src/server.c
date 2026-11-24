@@ -56,6 +56,36 @@ static void send_error(int fd, int status, bool head_only) {
     }
 }
 
+/* The accepting thread writes this, so it gets a short deadline instead of the request one. */
+#define OVERLOAD_WRITE_TIMEOUT_MS 100
+
+static void reject_overloaded(int fd) {
+    (void)mw_http_send_error(fd, 503, false, mw_net_now_ms() + OVERLOAD_WRITE_TIMEOUT_MS);
+    /* Discard request bytes already received so close does not turn into a reset. */
+    char discard[512];
+    (void)recv(fd, discard, sizeof(discard), MSG_DONTWAIT);
+}
+
+/* A failed accept is retried unless the listener itself is unusable. */
+static bool accept_error_is_transient(int error) {
+    switch (error) {
+    case EINTR:
+    case ECONNABORTED:
+    case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+    case EWOULDBLOCK:
+#endif
+    case EPROTO:
+    case EMFILE:
+    case ENFILE:
+    case ENOBUFS:
+    case ENOMEM:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void serve_index(const mw_config_t *config, int client, bool head_only) {
     int fd = openat(config->root_fd, "index.html", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd == -1) {
@@ -117,6 +147,11 @@ static void handle_connection(const mw_config_t *config, int client) {
     mw_http_buffer_destroy(&input);
 }
 
+/* Wrapper over the bootstrap handler above; #5 and #6 replace it with the real app module. */
+void mw_app_handle_connection(mw_runtime_t *runtime, int client_fd) {
+    handle_connection(runtime->config, client_fd);
+}
+
 int mw_server_run(mw_config_t *config) {
     struct sigaction ignore = {.sa_handler = SIG_IGN};
     struct sigaction previous;
@@ -132,20 +167,38 @@ int mw_server_run(mw_config_t *config) {
         (void)sigaction(SIGPIPE, &previous, NULL);
         return MW_EXIT_RUNTIME_ERROR;
     }
+    mw_runtime_t runtime = {.config = config};
+    atomic_init(&runtime.stopping, false);
+    mw_pool_t *pool = NULL;
+    if (mw_pool_create(&runtime, &pool) == -1) {
+        perror("thread pool");
+        (void)close(listener);
+        (void)sigaction(SIGPIPE, &previous, NULL);
+        return MW_EXIT_RUNTIME_ERROR;
+    }
     fprintf(stderr, "Listening on http://%s:%u (root: %s)\n", config->host,
             (unsigned int)config->port, config->root);
     for (;;) {
         int client = accept(listener, NULL, NULL);
         if (client == -1) {
-            if (errno == EINTR || errno == ECONNABORTED) {
-                continue;
+            if (!accept_error_is_transient(errno)) {
+                perror("accept");
+                break;
             }
-            perror("accept");
-            break;
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+                /* Out of descriptors or memory: back off briefly instead of spinning. */
+                perror("accept");
+                struct timespec pause = {.tv_sec = 0, .tv_nsec = 10L * 1000L * 1000L};
+                (void)nanosleep(&pause, NULL);
+            }
+            continue;
         }
-        handle_connection(config, client);
-        (void)close(client);
+        if (!mw_pool_submit(pool, client)) {
+            reject_overloaded(client);
+            (void)close(client);
+        }
     }
+    mw_pool_destroy(pool);
     (void)close(listener);
     (void)sigaction(SIGPIPE, &previous, NULL);
     return MW_EXIT_RUNTIME_ERROR;
