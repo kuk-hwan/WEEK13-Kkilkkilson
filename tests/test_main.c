@@ -6,6 +6,8 @@
 int main(int argc, char **argv) {
     const test_case_t tests[] = {
         {"spec contract", test_spec_contract},
+        {"static MIME types", test_static_mime},
+        {"static path decoding", test_static_decode},
         {"config defaults and cleanup", test_config_defaults},
         {"config options", test_config_options},
         {"config invalid arguments", test_config_errors},

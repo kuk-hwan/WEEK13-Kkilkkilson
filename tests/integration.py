@@ -153,9 +153,9 @@ class FirstResponseTests(unittest.TestCase):
         with running_server(self.root) as port:
             self.assert_html(request(port, (b"GET / HTTP/1.0\nHost: localhost\n\n",)), port)
 
-    def test_other_requests_are_404_in_bootstrap(self):
+    def test_missing_file_is_404(self):
         with running_server(self.root) as port:
-            for line in (b"GET /missing HTTP/1.1", b"GET /?v=1 HTTP/1.1"):
+            for line in (b"GET /missing HTTP/1.1",):
                 with self.subTest(line=line):
                     status, headers, body = request(port, (line + b"\r\nHost: localhost\r\n\r\n",))
                     self.assertEqual(status, "HTTP/1.1 404 Not Found")
@@ -712,6 +712,113 @@ class ProxyTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(b"usage:", result.stderr)
                 assert_no_sanitizer_errors(result.stderr.decode())
+
+
+class StaticFileTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mw-static-", dir="/tmp")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"root index")
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "index.html").write_bytes(b"docs index")
+        (self.root / "docs" / "한 글.CSS").write_bytes(b"body { color: red; }\n")
+        (self.root / "empty").mkdir()
+
+    def fetch(self, port, target, method=b"GET"):
+        return request(port, (method + b" " + target + b" HTTP/1.1\r\nHost: h\r\n"
+                              b"Connection: close\r\nContent-Length: 0\r\n\r\n",))
+
+    def test_directories_queries_and_encoded_filenames(self):
+        with running_server(self.root) as port:
+            for target, expected, mime in (
+                (b"/?v=1", b"root index", "text/html; charset=utf-8"),
+                (b"/docs", b"docs index", "text/html; charset=utf-8"),
+                (b"/docs/", b"docs index", "text/html; charset=utf-8"),
+                (b"/docs//index.html?x=%zz", b"docs index", "text/html; charset=utf-8"),
+                (b"/docs/%ED%95%9C%20%EA%B8%80.CSS?v=2", b"body { color: red; }\n",
+                 "text/css; charset=utf-8"),
+            ):
+                with self.subTest(target=target):
+                    status, headers, body = self.fetch(port, target)
+                    self.assertEqual((status, body), (OK_STATUS, expected))
+                    self.assertEqual(headers["Content-Type"], mime)
+                    self.assertEqual(int(headers["Content-Length"]), len(body))
+
+    def test_errors_and_path_escape_attempts(self):
+        outside = self.root.parent / (self.root.name + "-outside.txt")
+        outside.write_bytes(b"secret")
+        self.addCleanup(outside.unlink)
+        (self.root / "link").symlink_to(outside)
+        (self.root / "dir-link").symlink_to(self.root / "docs", target_is_directory=True)
+        (self.root / "dangling").symlink_to(self.root / "missing")
+        (self.root / "symlink-index").mkdir()
+        (self.root / "symlink-index" / "index.html").symlink_to(outside)
+        (self.root / "directory-index").mkdir()
+        (self.root / "directory-index" / "index.html").mkdir()
+        os.mkfifo(self.root / "fifo")
+        special = socket.socket(socket.AF_UNIX)
+        self.addCleanup(special.close)
+        special.bind(str(self.root / "socket"))
+        (self.root / "socket-index").mkdir()
+        index_socket = socket.socket(socket.AF_UNIX)
+        self.addCleanup(index_socket.close)
+        index_socket.bind(str(self.root / "socket-index" / "index.html"))
+        with running_server(self.root) as port:
+            for target, code in (
+                (b"/missing", 404), (b"/index.html/child", 404), (b"/index.html/", 404),
+                (b"/empty", 403), (b"/empty/", 403), (b"/link", 403), (b"/dir-link/index.html", 403),
+                (b"/dangling", 403), (b"/symlink-index/", 403), (b"/directory-index/", 403),
+                (b"/fifo", 403), (b"/socket", 403), (b"/socket-index/", 403), (b"/../secret", 403), (b"/./index.html", 403),
+                (b"/%2e%2e/secret", 403), (b"/docs%2f..%2findex.html", 403),
+                (b"/%00", 403), (b"/%1f", 403), (b"/%7f", 403),
+                (b"/%", 400), (b"/%0", 400), (b"/%GG", 400),
+            ):
+                with self.subTest(target=target):
+                    status, headers, body = self.fetch(port, target)
+                    self.assertTrue(status.startswith(f"HTTP/1.1 {code} "), status)
+                    self.assertEqual(int(headers["Content-Length"]), len(body))
+                    self.assertIn(str(code).encode(), body)
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_unreadable_file_and_directory_are_403(self):
+        denied = self.root / "denied.txt"
+        denied.write_bytes(b"secret")
+        denied.chmod(0)
+        self.addCleanup(denied.chmod, 0o600)
+        locked = self.root / "locked"
+        locked.mkdir()
+        (locked / "a.txt").write_bytes(b"secret")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        with running_server(self.root) as port:
+            for target in (b"/denied.txt", b"/locked/a.txt"):
+                status, _, _ = self.fetch(port, target)
+                self.assertEqual(status, "HTTP/1.1 403 Forbidden")
+
+    def test_head_matches_get_and_post_has_allow(self):
+        with running_server(self.root) as port:
+            for target in (b"/", b"/docs/", b"/docs/index.html", b"/missing", b"/empty/"):
+                get_status, get_headers, _ = self.fetch(port, target)
+                head_status, head_headers, body = self.fetch(port, target, b"HEAD")
+                self.assertEqual(head_status, get_status)
+                for key in ("Content-Type", "Content-Length", "Connection", "Server"):
+                    self.assertEqual(head_headers[key], get_headers[key])
+                self.assertIsNotNone(parsedate_to_datetime(head_headers["Date"]))
+                self.assertEqual(body, b"")
+            status, headers, body = self.fetch(port, b"/docs/index.html", b"POST")
+            self.assertEqual(status, "HTTP/1.1 405 Method Not Allowed")
+            self.assertEqual(headers["Allow"], "GET, HEAD")
+            self.assertEqual(int(headers["Content-Length"]), len(body))
+
+    def test_binary_multimegabyte_and_unknown_mime(self):
+        content = bytes(range(256)) * 20481
+        (self.root / "docs" / "large.bin").write_bytes(content)
+        with running_server(self.root) as port:
+            status, headers, body = self.fetch(port, b"/docs/large.bin")
+            self.assertEqual((status, body), (OK_STATUS, content))
+            self.assertEqual(int(headers["Content-Length"]), len(content))
+            self.assertEqual(headers["Content-Type"], "application/octet-stream")
 
 
 if __name__ == "__main__":
