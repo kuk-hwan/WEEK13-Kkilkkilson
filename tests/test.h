@@ -29,5 +29,12 @@ bool test_pool_create_rejects_bad_sizes(void);
 bool test_net_read_deadline(void);
 bool test_net_write_all(void);
 bool test_net_write_deadline(void);
+bool test_http_valid_requests(void);
+bool test_http_need_more(void);
+bool test_http_bad_request(void);
+bool test_http_status_codes(void);
+bool test_http_limits(void);
+bool test_http_response_headers(void);
+bool test_http_read_request(void);
 
 #endif

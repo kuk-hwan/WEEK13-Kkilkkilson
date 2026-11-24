@@ -153,7 +153,7 @@ class FirstResponseTests(unittest.TestCase):
 
     def test_other_requests_are_404_in_bootstrap(self):
         with running_server(self.root) as port:
-            for line in (b"GET /missing HTTP/1.1", b"POST / HTTP/1.1", b"GET /?v=1 HTTP/1.1"):
+            for line in (b"GET /missing HTTP/1.1", b"GET /?v=1 HTTP/1.1"):
                 with self.subTest(line=line):
                     status, headers, body = request(port, (line + b"\r\nHost: localhost\r\n\r\n",))
                     self.assertEqual(status, "HTTP/1.1 404 Not Found")
@@ -209,7 +209,7 @@ class FirstResponseTests(unittest.TestCase):
 
     def test_header_limit_and_recovery(self):
         with running_server(self.root) as port:
-            status, headers, _ = request(port, (b"G" * 16384,))
+            status, headers, _ = request(port, (b"GET / HTTP/1.1\r\nHost: h\r\nX: " + b"v" * 16384,))
             self.assertEqual(status, "HTTP/1.1 431 Request Header Fields Too Large")
             self.assert_server_header(headers, port)
             self.assert_html(request(port), port)
@@ -354,6 +354,110 @@ class ConcurrencyTests(unittest.TestCase):
                 with running_server(self.root, extra_args=args) as port:
                     status, _, _ = request(port)
                     self.assertEqual(status, OK_STATUS)
+
+
+class HttpParsingTests(unittest.TestCase):
+    """Parser errors over a real socket (docs/spec.md "HTTP 범위와 한도")."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-test-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"<h1>ok</h1>\n")
+
+    def assert_standard_headers(self, headers, port, body):
+        self.assertEqual(headers["Server"], f"server-{port}")
+        self.assertIsNotNone(parsedate_to_datetime(headers["Date"]))
+        self.assertEqual(int(headers["Content-Length"]), len(body))
+        self.assertIn(headers["Connection"], ("close", "keep-alive"))
+
+    def test_error_codes_close_the_connection(self):
+        host = b"Host: h\r\n"
+        cases = {
+            400: [b"GET / HTTP/1.1\r\n\r\n", b"GET http://h/ HTTP/1.1\r\n" + host + b"\r\n",
+                  b"GET / HTTP/1.1\r\n" + host + b" folded\r\n\r\n",
+                  b"GET / HTTP/1.1\r\n" + host + host + b"\r\n",
+                  b"POST / HTTP/1.1\r\n" + host + b"Content-Length: 1x\r\n\r\n",
+                  b"POST / HTTP/1.1\r\n" + host + b"Content-Length: 1\r\nContent-Length: 2\r\n\r\n"],
+            411: [b"POST / HTTP/1.1\r\n" + host + b"\r\n"],
+            414: [b"GET /" + b"a" * 9000 + b" HTTP/1.1\r\n" + host + b"\r\n"],
+            417: [b"GET / HTTP/1.1\r\n" + host + b"Expect: 200-ok\r\n\r\n"],
+            431: [b"GET / HTTP/1.1\r\n" + host + b"".join(b"X%d: v\r\n" % i for i in range(70)) + b"\r\n"],
+            501: [b"PUT / HTTP/1.1\r\n" + host + b"\r\n",
+                  b"POST / HTTP/1.1\r\n" + host + b"Transfer-Encoding: chunked\r\n\r\n"],
+            505: [b"GET / HTTP/2.0\r\n" + host + b"\r\n"],
+        }
+        with running_server(self.root) as port:
+            for code, requests in cases.items():
+                for raw in requests:
+                    with self.subTest(code=code, raw=raw[:40]):
+                        with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                            client.sendall(raw)
+                            status, headers, body = read_response(client)  # EOF means closed
+                        self.assertTrue(status.startswith(f"HTTP/1.1 {code} "), status)
+                        self.assertEqual(headers["Connection"], "close")
+                        self.assertIn(f"<h1>{code} ".encode(), body)
+                        self.assert_standard_headers(headers, port, body)
+            self.assertEqual(request(port)[0], "HTTP/1.1 200 OK")
+
+    def test_post_405_has_allow_and_reads_body(self):
+        with running_server(self.root) as port:
+            status, headers, body = request(
+                port, (b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhel", b"lo"))
+            self.assertEqual(status, "HTTP/1.1 405 Method Not Allowed")
+            self.assertEqual(headers["Allow"], "GET, HEAD")
+            self.assert_standard_headers(headers, port, body)
+
+    def test_head_root_matches_get_without_body(self):
+        with running_server(self.root) as port:
+            get = request(port)
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+                status, headers, body = read_response(client)
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            self.assertEqual(headers["Content-Length"], get[1]["Content-Length"])
+            self.assertGreater(int(headers["Content-Length"]), 0)
+            self.assertEqual(body, b"")
+
+    def test_head_has_no_body(self):
+        with running_server(self.root) as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"HEAD /missing HTTP/1.1\r\nHost: h\r\n\r\n")
+                status, headers, body = read_response(client)
+            self.assertEqual(status, "HTTP/1.1 404 Not Found")
+            self.assertGreater(int(headers["Content-Length"]), 0)
+            self.assertEqual(body, b"")
+
+    def test_oversized_body_gets_413_before_body_is_sent(self):
+        with running_server(self.root) as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 1048577\r\n\r\n")
+                status, headers, _ = read_response(client)  # we never sent the body
+            self.assertTrue(status.startswith("HTTP/1.1 413 "), status)
+            self.assertEqual(headers["Connection"], "close")
+
+    def test_body_at_the_limit_is_read(self):
+        with running_server(self.root) as port:
+            body = b"x" * 1048576
+            head = b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 1048576\r\n\r\n"
+            self.assertEqual(request(port, (head, body))[0], "HTTP/1.1 405 Method Not Allowed")
+
+    def test_expect_100_continue_comes_first(self):
+        with running_server(self.root) as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 4\r\n"
+                               b"Expect: 100-continue\r\n\r\n")
+                self.assertEqual(client.recv(1024), b"HTTP/1.1 100 Continue\r\n\r\n")
+                client.sendall(b"data")
+                status, _, _ = read_response(client)
+            self.assertEqual(status, "HTTP/1.1 405 Method Not Allowed")
+
+    def test_expect_other_value_is_417_without_100(self):
+        with running_server(self.root) as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 4\r\nExpect: nope\r\n\r\n")
+                status, _, _ = read_response(client)
+            self.assertTrue(status.startswith("HTTP/1.1 417 "), status)
 
 
 if __name__ == "__main__":
