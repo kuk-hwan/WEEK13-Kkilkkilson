@@ -8,6 +8,12 @@
 #include <time.h>
 #include <unistd.h>
 
+static _Thread_local uint64_t bytes_written;
+
+uint64_t mw_net_bytes_written(void) {
+    return bytes_written;
+}
+
 static int nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags == -1) {
@@ -150,6 +156,7 @@ int mw_net_write_all(int fd, const void *buffer, size_t length, mw_deadline_t de
             return -1;
         }
         sent += (size_t)count;
+        bytes_written += (uint64_t)count;
     }
     return 0;
 }

@@ -33,6 +33,7 @@ bool test_pool_create_rejects_bad_sizes(void);
 bool test_net_read_deadline(void);
 bool test_net_write_all(void);
 bool test_net_write_deadline(void);
+bool test_net_bytes_written(void);
 bool test_http_valid_requests(void);
 bool test_http_need_more(void);
 bool test_http_bad_request(void);
@@ -42,6 +43,7 @@ bool test_http_response_headers(void);
 bool test_http_read_request(void);
 bool test_http_upstream_response(void);
 bool test_http_hop_by_hop(void);
+bool test_http_last_response(void);
 bool test_proxy_match_route(void);
 bool test_proxy_round_robin(void);
 

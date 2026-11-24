@@ -503,8 +503,18 @@ static bool is_generated_header(mw_slice_t name) {
            ieq(name, "server");
 }
 
+static _Thread_local int last_status;
+static _Thread_local bool last_keep_alive;
+
+void mw_http_last_response(int *status, bool *keep_alive) {
+    *status = last_status;
+    *keep_alive = last_keep_alive;
+}
+
 int mw_http_send_response(int fd, const mw_response_t *response, bool head_only, bool keep_alive,
                           mw_deadline_t deadline) {
+    last_status = response->status;
+    last_keep_alive = keep_alive;
     time_t now = time(NULL);
     struct tm utc;
     char date[64];

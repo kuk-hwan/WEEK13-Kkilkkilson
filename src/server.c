@@ -1,5 +1,6 @@
 #include "mini_webserver.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -7,16 +8,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
 /*
- * Send an error page, then drain what the client still sends (bounded) so close() does not turn
- * unread bytes into a RST that destroys the response before the client reads it.
+ * Close() with unread bytes in the socket turns into a RST that can destroy a response the client
+ * has not read yet. Half-close, then drain what still arrives (bounded) before the caller closes.
  */
-static void send_error(int fd, int status, bool head_only) {
-    mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
-    if (mw_http_send_error(fd, status, head_only, deadline) == -1 || shutdown(fd, SHUT_WR) == -1) {
+static void drain_before_close(int fd) {
+    if (shutdown(fd, SHUT_WR) == -1) {
         return;
     }
     unsigned char sink[4096];
@@ -28,6 +29,15 @@ static void send_error(int fd, int status, bool head_only) {
         }
         drained += (size_t)count;
     }
+}
+
+/* Send an error page (the connection closes after it), then drain as above. */
+static void send_error(int fd, int status, bool head_only) {
+    mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
+    if (mw_http_send_error(fd, status, head_only, deadline) == -1) {
+        return;
+    }
+    drain_before_close(fd);
 }
 
 /* The accepting thread writes this, so it gets a short deadline instead of the request one. */
@@ -77,7 +87,7 @@ static mw_slice_t header_value(const mw_request_t *request, const char *name) {
     return (mw_slice_t){NULL, 0};
 }
 
-static void send_405(int fd, const char *allow, bool head_only) {
+static int send_405(int fd, const char *allow, bool head_only) {
     static const char page[] = "<!doctype html><h1>405 Method Not Allowed</h1>\n";
     mw_response_t response = {.status = 405,
                               .body = {(const unsigned char *)page, sizeof(page) - 1}};
@@ -87,19 +97,19 @@ static void send_405(int fd, const char *allow, bool head_only) {
     response.headers.items[1] = (mw_header_t){{(const unsigned char *)"Allow", 5},
                                               {(const unsigned char *)allow, strlen(allow)}};
     response.headers.count = 2;
-    (void)mw_http_send_response(fd, &response, head_only, false,
-                                mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+    return mw_http_send_response(fd, &response, head_only, false,
+                                 mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
 }
 
-/* Dynamic endpoints (#10). Returns false when the path is not one of them. */
-static bool serve_dynamic(const mw_config_t *config, int fd, const mw_request_t *request) {
+/* Dynamic endpoints (#10). Returns 1 when the path is not one of them, else the send result. */
+static int serve_dynamic(const mw_config_t *config, int fd, const mw_request_t *request,
+                         bool keep) {
     bool get = slice_is(request->method, "GET");
     bool head = slice_is(request->method, "HEAD");
     mw_response_t response = {.status = 200};
     if (slice_is(request->path, "/api/whoami")) {
         if (!get && !head) {
-            send_405(fd, "GET, HEAD", false);
-            return true;
+            return send_405(fd, "GET, HEAD", false);
         }
         char json[512];
         size_t n = (size_t)snprintf(json, sizeof(json), "{\"name\":\"");
@@ -120,14 +130,12 @@ static bool serve_dynamic(const mw_config_t *config, int fd, const mw_request_t 
         response.headers.items[0] = (mw_header_t){{(const unsigned char *)"Content-Type", 12},
                                                   {(const unsigned char *)"application/json", 16}};
         response.headers.count = 1;
-        (void)mw_http_send_response(fd, &response, head, false,
-                                    mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
-        return true;
+        return mw_http_send_response(fd, &response, head, keep,
+                                     mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
     }
     if (slice_is(request->path, "/api/echo")) {
         if (!slice_is(request->method, "POST")) {
-            send_405(fd, "POST", head);
-            return true;
+            return send_405(fd, "POST", head);
         }
         mw_slice_t type = header_value(request, "Content-Type");
         if (type.length == 0) {
@@ -137,11 +145,10 @@ static bool serve_dynamic(const mw_config_t *config, int fd, const mw_request_t 
         response.headers.items[0] =
             (mw_header_t){{(const unsigned char *)"Content-Type", 12}, type};
         response.headers.count = 1;
-        (void)mw_http_send_response(fd, &response, false, false,
-                                    mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
-        return true;
+        return mw_http_send_response(fd, &response, false, keep,
+                                     mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
     }
-    return false;
+    return 1;
 }
 
 /*
@@ -165,47 +172,97 @@ static bool wait_for_next_request(const mw_runtime_t *runtime, int client) {
     return false;
 }
 
+/* One line on stderr per request: time, client, method, path, status, bytes sent, milliseconds. */
+static void log_access(const char *client, const mw_request_t *request, int status, uint64_t bytes,
+                       int64_t elapsed_ms) {
+    char stamp[32] = "-";
+    time_t now = time(NULL);
+    struct tm utc;
+    if (gmtime_r(&now, &utc) != NULL) {
+        (void)strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    }
+    /* Parse errors and timeouts have no usable request line. */
+    int method_length = request != NULL ? (int)request->method.length : 1;
+    const char *method = request != NULL ? (const char *)request->method.data : "-";
+    int path_length = request != NULL ? (int)request->path.length : 1;
+    const char *path = request != NULL ? (const char *)request->path.data : "-";
+    if (path_length > 256) {
+        path_length = 256;
+    }
+    fprintf(stderr, "%s %s %.*s %.*s %d %llu %lldms\n", stamp, client, method_length, method,
+            path_length, path, status, (unsigned long long)bytes, (long long)elapsed_ms);
+}
+
+static void peer_name(int fd, char *name, size_t capacity) {
+    struct sockaddr_in peer;
+    socklen_t length = sizeof(peer);
+    if (getpeername(fd, (struct sockaddr *)&peer, &length) == -1 || peer.sin_family != AF_INET ||
+        inet_ntop(AF_INET, &peer.sin_addr, name, (socklen_t)capacity) == NULL) {
+        (void)snprintf(name, capacity, "-");
+    }
+}
+
+/* Answers one parsed request. Returns 0 when the response was sent in full. */
+static int serve_request(mw_config_t *config, int client, const mw_request_t *request, bool keep) {
+    mw_route_t *route = mw_proxy_match_route(config->routes, config->route_count, request->path);
+    if (route != NULL) {
+        return mw_proxy_serve(config, route, client, request, keep,
+                              mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+    }
+    int result = serve_dynamic(config, client, request, keep);
+    if (result != 1) {
+        return result;
+    }
+    return mw_static_serve(config, client, request, keep, mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+}
+
 static void handle_connection(mw_runtime_t *runtime, int client) {
     mw_config_t *config = runtime->config;
     mw_buffer_t input = {NULL, 0, 0};
     mw_request_t request;
+    char peer[INET_ADDRSTRLEN];
+    peer_name(client, peer, sizeof(peer));
     for (size_t served = 1;; served++) {
         if (served > 1 && input.length == 0 && !wait_for_next_request(runtime, client)) {
             break;
         }
-        int result = mw_http_read_request(client, &input, &request,
-                                          mw_net_now_ms() + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
-        mw_route_t *route =
-            result == 0 ? mw_proxy_match_route(config->routes, config->route_count, request.path)
-                        : NULL;
-        if (route != NULL) {
-            /* Only proxied responses keep the connection so far; #9 extends it to the rest. */
-            bool keep = request.keep_alive && served < MW_MAX_REQUESTS_PER_CONNECTION &&
-                        !atomic_load(&runtime->stopping);
-            if (mw_proxy_serve(config, route, client, &request, keep,
-                               mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS) != 0 ||
-                !keep) {
+        mw_deadline_t started = mw_net_now_ms();
+        uint64_t sent_before = mw_net_bytes_written();
+        int result =
+            mw_http_read_request(client, &input, &request, started + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
+        if (result != 0) {
+            /* Not a request we can serve: error page, then close. A silent idle close or a
+             * dropped connection is not a request and gets no log line. */
+            if (result == -1 && !(errno == ETIMEDOUT && input.length > 0)) {
                 break;
             }
-            /* Drop this request, keep any pipelined bytes behind it. */
-            size_t used = (size_t)(request.body.data - input.data) + request.body.length;
-            memmove(input.data, input.data + used, input.length - used);
-            input.length -= used;
-            continue;
+            send_error(client, result > 0 ? result : 408, false);
+            int status = 0;
+            bool kept = false;
+            mw_http_last_response(&status, &kept);
+            log_access(peer, NULL, status, mw_net_bytes_written() - sent_before,
+                       mw_net_now_ms() - started);
+            break;
         }
-        if (result > 0) {
-            send_error(client, result, false);
-        } else if (result == -1) {
-            if (errno == ETIMEDOUT && input.length > 0) {
-                send_error(client, 408, false);
+        bool keep = request.keep_alive && served < MW_MAX_REQUESTS_PER_CONNECTION &&
+                    !atomic_load(&runtime->stopping);
+        int failed = serve_request(config, client, &request, keep);
+        int status = 0;
+        bool kept = false;
+        mw_http_last_response(&status, &kept);
+        log_access(peer, &request, status, mw_net_bytes_written() - sent_before,
+                   mw_net_now_ms() - started);
+        if (failed != 0 || !kept) {
+            int unread = 0;
+            if (failed == 0 && ioctl(client, FIONREAD, &unread) == 0 && unread > 0) {
+                drain_before_close(client);
             }
-        } else if (serve_dynamic(config, client, &request)) {
-            /* answered */
-        } else {
-            (void)mw_static_serve(config, client, &request, false,
-                                  mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+            break;
         }
-        break;
+        /* Drop this request, keep any pipelined bytes behind it. */
+        size_t used = (size_t)(request.body.data - input.data) + request.body.length;
+        memmove(input.data, input.data + used, input.length - used);
+        input.length -= used;
     }
     mw_http_buffer_destroy(&input);
 }

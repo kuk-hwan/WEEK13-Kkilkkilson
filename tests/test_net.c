@@ -86,3 +86,16 @@ bool test_net_write_deadline(void) {
     CHECK(result == -1 && error == ETIMEDOUT);
     return true;
 }
+
+bool test_net_bytes_written(void) {
+    int pair[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    uint64_t before = mw_net_bytes_written();
+    CHECK(mw_net_write_all(pair[0], "abcde", 5, mw_net_now_ms() + 1000) == 0);
+    CHECK(mw_net_write_all(pair[0], "", 0, mw_net_now_ms() + 1000) == 0);
+    CHECK(mw_net_write_all(pair[0], "fg", 2, mw_net_now_ms() + 1000) == 0);
+    CHECK(mw_net_bytes_written() - before == 7);
+    (void)close(pair[0]);
+    (void)close(pair[1]);
+    return true;
+}

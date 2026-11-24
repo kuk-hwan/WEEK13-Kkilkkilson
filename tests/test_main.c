@@ -29,7 +29,9 @@ int main(int argc, char **argv) {
         {"http upstream response", test_http_upstream_response},
         {"http hop-by-hop headers", test_http_hop_by_hop},
         {"proxy route matching", test_proxy_match_route},
-        {"proxy round robin", test_proxy_round_robin}};
+        {"proxy round robin", test_proxy_round_robin},
+        {"net bytes written counter", test_net_bytes_written},
+        {"http last response record", test_http_last_response}};
     bool force_failure = false;
     if (argc == 2 && strcmp(argv[1], "--self-test-failure") == 0) {
         force_failure = true;
