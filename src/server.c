@@ -1,41 +1,12 @@
-#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
-/* Darwin hides O_NOFOLLOW in its strict POSIX namespace. */
-#define _DARWIN_C_SOURCE
-#endif
 #include "mini_webserver.h"
 
 #include <errno.h>
-#include <fcntl.h>
-#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-/* Bootstrap response code is private; #5/#6 replace it with the HTTP/static modules. */
-static int send_head(const mw_config_t *config, int fd, int status, uintmax_t length,
-                     mw_deadline_t deadline) {
-    time_t now = time(NULL);
-    struct tm utc;
-    char date[64];
-    if (gmtime_r(&now, &utc) == NULL ||
-        strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &utc) == 0) {
-        return -1;
-    }
-    char head[512];
-    int size =
-        snprintf(head, sizeof(head),
-                 "HTTP/1.1 %d %s\r\nContent-Type: text/html; charset=utf-8\r\n"
-                 "Content-Length: %ju\r\nConnection: close\r\nDate: %s\r\nServer: %s\r\n\r\n",
-                 status, mw_http_status_reason(status), length, date, config->name);
-    if (size < 0 || (size_t)size >= sizeof(head)) {
-        return -1;
-    }
-    return mw_net_write_all(fd, head, (size_t)size, deadline);
-}
 
 /*
  * Send an error page, then drain what the client still sends (bounded) so close() does not turn
@@ -85,44 +56,6 @@ static bool accept_error_is_transient(int error) {
     default:
         return false;
     }
-}
-
-static void serve_index(const mw_config_t *config, int client, bool head_only) {
-    int fd = openat(config->root_fd, "index.html", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    if (fd == -1) {
-        int status = errno == ENOENT || errno == EACCES || errno == ELOOP ? 403 : 500;
-        send_error(client, status, head_only);
-        return;
-    }
-    struct stat info;
-    if (fstat(fd, &info) == -1) {
-        (void)close(fd);
-        send_error(client, 500, head_only);
-        return;
-    }
-    if (!S_ISREG(info.st_mode) || info.st_size < 0) {
-        (void)close(fd);
-        send_error(client, 403, head_only);
-        return;
-    }
-    mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
-    if (send_head(config, client, 200, (uintmax_t)info.st_size, deadline) == 0 && !head_only) {
-        unsigned char buffer[8192];
-        off_t remaining = info.st_size;
-        while (remaining > 0) {
-            size_t capacity =
-                remaining < (off_t)sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
-            ssize_t count = read(fd, buffer, capacity);
-            if (count == -1 && errno == EINTR) {
-                continue;
-            }
-            if (count <= 0 || mw_net_write_all(client, buffer, (size_t)count, deadline) == -1) {
-                break;
-            }
-            remaining -= count;
-        }
-    }
-    (void)close(fd);
 }
 
 static bool slice_is(mw_slice_t s, const char *literal) {
@@ -230,8 +163,6 @@ static void handle_connection(mw_config_t *config, int client) {
             input.length -= used;
             continue;
         }
-        bool head_only = result == 0 && request.method.length == 4 &&
-                         memcmp(request.method.data, "HEAD", 4) == 0;
         if (result > 0) {
             send_error(client, result, false);
         } else if (result == -1) {
@@ -240,19 +171,16 @@ static void handle_connection(mw_config_t *config, int client) {
             }
         } else if (serve_dynamic(config, client, &request)) {
             /* answered */
-        } else if (request.method.length == 4 && memcmp(request.method.data, "POST", 4) == 0) {
-            send_error(client, 405, false);
-        } else if (request.path.length == 1 && request.query.length == 0) {
-            serve_index(config, client, head_only);
         } else {
-            send_error(client, 404, head_only);
+            (void)mw_static_serve(config, client, &request, false,
+                                  mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
         }
         break;
     }
     mw_http_buffer_destroy(&input);
 }
 
-/* Wrapper over the bootstrap handler above; #5 and #6 replace it with the real app module. */
+/* The worker owns the connection; handlers borrow it until the response is complete. */
 void mw_app_handle_connection(mw_runtime_t *runtime, int client_fd) {
     handle_connection(runtime->config, client_fd);
 }
