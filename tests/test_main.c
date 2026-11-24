@@ -11,6 +11,7 @@ int main(int argc, char **argv) {
         {"config invalid arguments", test_config_errors},
         {"config name", test_config_name},
         {"config workers and queue", test_config_pool_options},
+        {"config route", test_config_route},
         {"pool full rejection and cleanup", test_pool_rejects_when_full_and_cleans_up},
         {"pool rejects bad sizes", test_pool_create_rejects_bad_sizes},
         {"read and absolute deadline", test_net_read_deadline},
@@ -22,7 +23,11 @@ int main(int argc, char **argv) {
         {"http 411 413 417 501 505", test_http_status_codes},
         {"http 414 431 limits", test_http_limits},
         {"http response headers", test_http_response_headers},
-        {"http read request", test_http_read_request}};
+        {"http read request", test_http_read_request},
+        {"http upstream response", test_http_upstream_response},
+        {"http hop-by-hop headers", test_http_hop_by_hop},
+        {"proxy route matching", test_proxy_match_route},
+        {"proxy round robin", test_proxy_round_robin}};
     bool force_failure = false;
     if (argc == 2 && strcmp(argv[1], "--self-test-failure") == 0) {
         force_failure = true;

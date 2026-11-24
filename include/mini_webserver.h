@@ -181,6 +181,8 @@ void mw_http_set_server_name(const char *name);
 int mw_http_parse_upstream_response(const unsigned char *bytes, size_t length, bool head_only,
                                     mw_upstream_response_t *response);
 void mw_http_upstream_destroy(mw_upstream_response_t *response);
+/* True for hop-by-hop names: the fixed list plus names listed in any Connection header. */
+bool mw_http_is_hop_by_hop(const mw_headers_t *headers, mw_slice_t name);
 
 /* static: pure helpers return 0 on success, otherwise 400/403. */
 const char *mw_static_mime_type(mw_slice_t path);

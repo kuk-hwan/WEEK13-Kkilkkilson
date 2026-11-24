@@ -1,6 +1,7 @@
 #include "mini_webserver.h"
 #include "test.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -105,5 +106,29 @@ bool test_config_pool_options(void) {
     char *too_big_queue[] = {"mini-webserver", "--queue", "4097"};
     CHECK(mw_config_parse(&config, 3, too_big_queue) == 2);
     mw_config_destroy(&config);
+    return true;
+}
+
+bool test_config_route(void) {
+    mw_config_t config;
+    char *args[] = {"mini-webserver", "--route", "/api/=127.0.0.1:8001"};
+    CHECK(mw_config_parse(&config, 3, args) == 0);
+    CHECK(config.route_count == 1 && strcmp(config.routes[0].prefix, "/api/") == 0);
+    const mw_backend_t *backend = &config.routes[0].backends[0];
+    CHECK(config.routes[0].backend_count == 1 && strcmp(backend->host, "127.0.0.1") == 0);
+    CHECK(backend->port == 8001 && backend->address.ss_family == AF_INET);
+    CHECK(backend->address_length == sizeof(struct sockaddr_in));
+    CHECK(ntohs(((const struct sockaddr_in *)&backend->address)->sin_port) == 8001);
+    mw_config_destroy(&config);
+    CHECK(config.route_count == 0);
+
+    const char *bad[] = {
+        "api/=127.0.0.1:8001", "/api/",       "/api/=127.0.0.1", "/api/=127.0.0.1:",
+        "/api/=127.0.0.1:0",   "/api/=:8001", "=127.0.0.1:8001", "/a:1=127.0.0.1"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char *wrong[] = {"mini-webserver", "--route", (char *)bad[i]};
+        CHECK(mw_config_parse(&config, 3, wrong) == 2);
+        CHECK(config.route_count == 0);
+    }
     return true;
 }
