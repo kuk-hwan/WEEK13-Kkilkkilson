@@ -45,7 +45,7 @@ make CLANG_FORMAT=clang-format-18 format-check
 curl -i http://127.0.0.1:8080/
 curl -I http://127.0.0.1:8080/index.html
 curl -i 'http://127.0.0.1:8080/index.html?v=2'
-curl -i -X POST http://127.0.0.1:8080/index.html # 405 + Allow: GET, HEAD
+curl -i --data '' http://127.0.0.1:8080/index.html # 405 + Allow: GET, HEAD
 ```
 
 200 상태와 `Content-Type: text/html; charset=utf-8`, 파일 바이트 수와 같은
