@@ -71,3 +71,39 @@ bool test_config_errors(void) {
     mw_config_destroy(&config);
     return true;
 }
+
+bool test_config_pool_options(void) {
+    mw_config_t config;
+    char *defaults[] = {"mini-webserver"};
+    CHECK(mw_config_parse(&config, 1, defaults) == 0);
+    CHECK(config.workers == 8 && config.queue_capacity == 64);
+    mw_config_destroy(&config);
+
+    char *lower[] = {"mini-webserver", "--workers", "1", "--queue", "1"};
+    CHECK(mw_config_parse(&config, 5, lower) == 0);
+    CHECK(config.workers == 1 && config.queue_capacity == 1);
+    mw_config_destroy(&config);
+
+    char *upper[] = {"mini-webserver", "--workers", "128", "--queue", "4096"};
+    CHECK(mw_config_parse(&config, 5, upper) == 0);
+    CHECK(config.workers == 128 && config.queue_capacity == 4096);
+    mw_config_destroy(&config);
+
+    const char *bad[] = {"", "0", "-1", "+1", " 1", "1x", "x", "99999999999999999999"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char *workers[] = {"mini-webserver", "--workers", (char *)bad[i]};
+        CHECK(mw_config_parse(&config, 3, workers) == 2);
+        CHECK(config.root == NULL && config.root_fd == -1);
+        mw_config_destroy(&config);
+        char *queue[] = {"mini-webserver", "--queue", (char *)bad[i]};
+        CHECK(mw_config_parse(&config, 3, queue) == 2);
+        mw_config_destroy(&config);
+    }
+    char *too_many_workers[] = {"mini-webserver", "--workers", "129"};
+    CHECK(mw_config_parse(&config, 3, too_many_workers) == 2);
+    mw_config_destroy(&config);
+    char *too_big_queue[] = {"mini-webserver", "--queue", "4097"};
+    CHECK(mw_config_parse(&config, 3, too_big_queue) == 2);
+    mw_config_destroy(&config);
+    return true;
+}

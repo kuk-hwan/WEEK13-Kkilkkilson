@@ -11,7 +11,7 @@
 static int invalid_config(mw_config_t *config, const char *message) {
     fprintf(stderr,
             "%s\nusage: mini-webserver [--host IPv4] [--port 1..65535] [--root directory]"
-            " [--name name]\n",
+            " [--workers 1..128] [--queue 1..4096] [--name name]\n",
             message);
     mw_config_destroy(config);
     return MW_EXIT_ARGUMENT_ERROR;
@@ -32,6 +32,24 @@ static bool parse_port(const char *text, uint16_t *port) {
         return false;
     }
     *port = (uint16_t)value;
+    return true;
+}
+
+static bool parse_size(const char *text, size_t minimum, size_t maximum, size_t *result) {
+    size_t value = 0;
+    if (*text == '\0') {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9' || value > (maximum - (size_t)(*p - '0')) / 10U) {
+            return false;
+        }
+        value = value * 10U + (size_t)(*p - '0');
+    }
+    if (value < minimum || value > maximum) {
+        return false;
+    }
+    *result = value;
     return true;
 }
 
@@ -59,6 +77,15 @@ int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
                 return invalid_config(config, "invalid IPv4 host");
             }
             memcpy(config->host, value, strlen(value) + 1);
+        } else if (strcmp(argv[i], "--workers") == 0) {
+            if (!parse_size(value, MW_MIN_WORKERS, MW_MAX_WORKERS, &config->workers)) {
+                return invalid_config(config, "invalid workers");
+            }
+        } else if (strcmp(argv[i], "--queue") == 0) {
+            if (!parse_size(value, MW_MIN_QUEUE_CAPACITY, MW_MAX_QUEUE_CAPACITY,
+                            &config->queue_capacity)) {
+                return invalid_config(config, "invalid queue");
+            }
         } else if (strcmp(argv[i], "--name") == 0) {
             if (*value == '\0' || strlen(value) > MW_MAX_SERVER_NAME) {
                 return invalid_config(config, "invalid name (1..63 bytes)");
