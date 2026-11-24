@@ -1,5 +1,6 @@
 #include "mini_webserver.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -408,6 +409,73 @@ static int parse_status_line(const unsigned char *line, size_t length) {
     return (line[9] - '0') * 100 + (line[10] - '0') * 10 + (line[11] - '0');
 }
 
+/* End of the line at `pos` (CRLF or LF), or SIZE_MAX when the data ends first. */
+static size_t line_end_at(const unsigned char *bytes, size_t length, size_t pos, size_t *next) {
+    const unsigned char *newline = pos < length ? memchr(bytes + pos, '\n', length - pos) : NULL;
+    if (newline == NULL) {
+        return SIZE_MAX;
+    }
+    size_t line_end = (size_t)(newline - bytes);
+    *next = line_end + 1U;
+    return line_end > pos && bytes[line_end - 1] == '\r' ? line_end - 1U : line_end;
+}
+
+/* Decodes "size[;ext] CRLF data CRLF ... 0 CRLF trailer* CRLF" into `body`. Trailers are dropped. */
+static int decode_chunked(const unsigned char *bytes, size_t length, mw_buffer_t *body) {
+    size_t pos = 0;
+    for (;;) {
+        size_t next = 0;
+        size_t end = line_end_at(bytes, length, pos, &next);
+        if (end == SIZE_MAX) {
+            return 502; /* closed before the last chunk */
+        }
+        size_t size = 0;
+        size_t digits = 0;
+        for (; pos + digits < end && isxdigit(bytes[pos + digits]); digits++) {
+            unsigned char c = bytes[pos + digits];
+            size = size * 16U + (size_t)(is_digit(c) ? c - '0' : (c | 0x20) - 'a' + 10);
+            if (digits >= 8) {
+                return 502; /* absurd chunk size */
+            }
+        }
+        if (digits == 0 || (pos + digits < end && bytes[pos + digits] != ';')) {
+            return 502;
+        }
+        pos = next;
+        if (size == 0) {
+            break;
+        }
+        if (size > length - pos) {
+            return 502;
+        }
+        unsigned char *grown = realloc(body->data, body->length + size);
+        if (grown == NULL) {
+            return 502;
+        }
+        body->data = grown;
+        memcpy(body->data + body->length, bytes + pos, size);
+        body->length += size;
+        body->capacity = body->length;
+        pos += size;
+        end = line_end_at(bytes, length, pos, &next);
+        if (end != pos) {
+            return 502; /* data not followed by a line end */
+        }
+        pos = next;
+    }
+    for (;;) { /* trailer lines up to the empty line */
+        size_t next = 0;
+        size_t end = line_end_at(bytes, length, pos, &next);
+        if (end == SIZE_MAX) {
+            return 502;
+        }
+        if (end == pos) {
+            return 0;
+        }
+        pos = next;
+    }
+}
+
 /*
  * `bytes` is everything the backend sent before closing. Header views borrow `bytes`; the body is
  * copied. The body is Content-Length bytes when given, otherwise everything up to the close.
@@ -463,6 +531,10 @@ int mw_http_parse_upstream_response(const unsigned char *bytes, size_t length, b
             response->has_content_length = true;
             response->content_length = (size_t)parsed;
         } else if (ieq(name, "transfer-encoding")) {
+            /* Only a lone "chunked" is understood; gzip etc. would reach the client mislabeled. */
+            if (chunked || !ieq(value, "chunked")) {
+                return 502;
+            }
             chunked = true;
         }
     }
@@ -470,7 +542,11 @@ int mw_http_parse_upstream_response(const unsigned char *bytes, size_t length, b
         return 0;
     }
     if (chunked) {
-        return 502; /* ponytail: chunked bodies are refused until #13 decodes them */
+        int status = decode_chunked(bytes + pos, length - pos, &response->body);
+        if (status != 0) {
+            mw_http_upstream_destroy(response);
+        }
+        return status;
     }
     size_t body_length = length - pos;
     if (response->has_content_length) {
