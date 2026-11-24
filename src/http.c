@@ -420,7 +420,7 @@ static size_t line_end_at(const unsigned char *bytes, size_t length, size_t pos,
     return line_end > pos && bytes[line_end - 1] == '\r' ? line_end - 1U : line_end;
 }
 
-/* Decodes "size[;ext] CRLF data CRLF ... 0 CRLF trailer* CRLF" into `body`. Trailers are dropped. */
+/* Decodes "size[;ext] CRLF data CRLF ... 0 CRLF trailer* CRLF" into `body`; trailers go. */
 static int decode_chunked(const unsigned char *bytes, size_t length, mw_buffer_t *body) {
     size_t pos = 0;
     for (;;) {

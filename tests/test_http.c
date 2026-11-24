@@ -315,7 +315,7 @@ bool test_http_upstream_response(void) {
 
 bool test_http_upstream_chunked(void) {
     mw_upstream_response_t response;
-    /* Several chunks, hex sizes in either case, a chunk extension, and a trailer that is dropped. */
+    /* Several chunks, hex in either case, a chunk extension, and a trailer that is dropped. */
     CHECK(parse_upstream("HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\nSet-Cookie: a\r\n"
                          "Set-Cookie: b\r\n\r\n3\r\nabc\r\nA;ext=1\r\n0123456789\r\n"
                          "0\r\nX-Trailer: t\r\n\r\n",
@@ -348,14 +348,15 @@ bool test_http_upstream_chunked(void) {
     mw_http_upstream_destroy(&response);
 
     const char *head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
-    const char *broken[] = {"",                          /* no chunk at all */
-                            "3\r\nabc\r\n",              /* no last chunk */
-                            "3\r\nabc\r\n0\r\n",         /* trailer part never ends */
-                            "3\r\nabc\r\n0\r\nX: 1\r\n", /* ... even with a trailer line */
-                            "zz\r\nabc\r\n0\r\n\r\n",   /* size is not hex */
-                            "\r\nabc\r\n0\r\n\r\n",     /* empty size */
-                            "5\r\nabc\r\n0\r\n\r\n",    /* closed in the middle of a chunk */
-                            "3\r\nabcde\r\n0\r\n\r\n",  /* data longer than the size */
+    /* No chunk, no last chunk, unfinished trailer, bad or empty size, short or long data, huge. */
+    const char *broken[] = {"",
+                            "3\r\nabc\r\n",
+                            "3\r\nabc\r\n0\r\n",
+                            "3\r\nabc\r\n0\r\nX: 1\r\n",
+                            "zz\r\nabc\r\n0\r\n\r\n",
+                            "\r\nabc\r\n0\r\n\r\n",
+                            "5\r\nabc\r\n0\r\n\r\n",
+                            "3\r\nabcde\r\n0\r\n\r\n",
                             "FFFFFFFFFF\r\nabc\r\n0\r\n\r\n"};
     for (size_t i = 0; i < sizeof(broken) / sizeof(broken[0]); i++) {
         char text[128];
