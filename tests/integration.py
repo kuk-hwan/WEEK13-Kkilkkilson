@@ -1,5 +1,7 @@
 """Process/TCP contract tests; no HTTP framework or external dependency."""
 import argparse
+import json
+import shutil
 from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 import os
@@ -458,6 +460,84 @@ class HttpParsingTests(unittest.TestCase):
                 client.sendall(b"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 4\r\nExpect: nope\r\n\r\n")
                 status, _, _ = read_response(client)
             self.assertTrue(status.startswith("HTTP/1.1 417 "), status)
+
+
+class DynamicEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-test-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def post(self, port, body, extra=b""):
+        head = b"POST /api/echo HTTP/1.1\r\nHost: h\r\nContent-Length: %d\r\n" % len(body)
+        return request(port, (head + extra + b"\r\n" + body,))
+
+    def test_whoami_json_and_head(self):
+        with running_server(self.root, extra_args=("--name", 'a"b')) as port:
+            status, headers, body = request(port, (b"GET /api/whoami?x=1 HTTP/1.1\r\nHost: h\r\n\r\n",))
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            self.assertEqual(headers["Content-Type"], "application/json")
+            self.assertEqual(json.loads(body), {"name": 'a"b', "port": port})
+            status, headers, body = request(port, (b"HEAD /api/whoami HTTP/1.1\r\nHost: h\r\n\r\n",))
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+            self.assertEqual(int(headers["Content-Length"]), len(json.dumps({"name": 'a"b', "port": port}, separators=(",", ":"))) + 1)
+            self.assertEqual(body, b"")
+
+    def test_default_name_is_server_port(self):
+        with running_server(self.root) as port:
+            _, _, body = request(port, (b"GET /api/whoami HTTP/1.1\r\nHost: h\r\n\r\n",))
+            self.assertEqual(json.loads(body), {"name": f"server-{port}", "port": port})
+
+    def test_echo_is_byte_exact(self):
+        with running_server(self.root) as port:
+            for body in (bytes(range(256)) * 40, "한글 🎉".encode(), b""):
+                status, headers, got = self.post(port, body)
+                self.assertEqual(status, "HTTP/1.1 200 OK")
+                self.assertEqual(got, body)
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+                self.assertEqual(headers["Content-Type"], "application/octet-stream")
+
+    def test_echo_content_type_is_copied(self):
+        with running_server(self.root) as port:
+            _, headers, _ = self.post(port, b"{}", b"content-type: application/json; charset=x\r\n")
+            self.assertEqual(headers["Content-Type"], "application/json; charset=x")
+
+    def test_wrong_methods_get_405_with_allow(self):
+        with running_server(self.root) as port:
+            for line, allow in ((b"GET /api/echo", "POST"), (b"HEAD /api/echo", "POST"),
+                                (b"POST /api/whoami", "GET, HEAD")):
+                status, headers, body = request(
+                    port, (line + b" HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n",))
+                self.assertEqual(status, "HTTP/1.1 405 Method Not Allowed", line)
+                self.assertEqual(headers["Allow"], allow)
+                if line.startswith(b"HEAD"):
+                    self.assertEqual(body, b"")
+
+    def test_other_api_paths_fall_through_to_404(self):
+        with running_server(self.root) as port:
+            for path in (b"/api/nope", b"/api/echo/", b"/api/"):
+                status, _, _ = request(port, (b"GET " + path + b" HTTP/1.1\r\nHost: h\r\n\r\n",))
+                self.assertEqual(status, "HTTP/1.1 404 Not Found", path)
+
+    @unittest.skipUnless(shutil.which("curl"), "curl not installed")
+    def test_curl_large_post_has_no_continue_delay(self):
+        data = Path(self.directory.name) / "big.bin"
+        data.write_bytes(b"x" * (1024 * 1024 - 100))
+        with running_server(self.root) as port:
+            started = time.monotonic()
+            out = subprocess.run(
+                ["curl", "-s", "-H", "Expect: 100-continue", "--data-binary", f"@{data}",
+                 f"http://127.0.0.1:{port}/api/echo"], capture_output=True, timeout=10, check=True)
+            self.assertLess(time.monotonic() - started, 0.9)
+            self.assertEqual(out.stdout, data.read_bytes())
+
+    def test_name_longer_than_63_bytes_is_argument_error(self):
+        for name in ("a" * 64, ""):
+            result = subprocess.run([str(BINARY), "--name", name, "--root", str(self.root)],
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+        with running_server(self.root, extra_args=("--name", "n" * 63)):
+            pass
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@
 static int invalid_config(mw_config_t *config, const char *message) {
     fprintf(stderr,
             "%s\nusage: mini-webserver [--host IPv4] [--port 1..65535] [--root directory]"
-            " [--workers 1..128] [--queue 1..4096]\n",
+            " [--workers 1..128] [--queue 1..4096] [--name name]\n",
             message);
     mw_config_destroy(config);
     return MW_EXIT_ARGUMENT_ERROR;
@@ -61,6 +61,7 @@ int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
     config->queue_capacity = MW_DEFAULT_QUEUE_CAPACITY;
     memcpy(config->host, MW_DEFAULT_HOST, sizeof(MW_DEFAULT_HOST));
     const char *root = MW_DEFAULT_ROOT;
+    const char *name = NULL;
     for (int i = 1; i < argc; i += 2) {
         if (i + 1 >= argc) {
             return invalid_config(config, "missing option value");
@@ -85,6 +86,11 @@ int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
                             &config->queue_capacity)) {
                 return invalid_config(config, "invalid queue");
             }
+        } else if (strcmp(argv[i], "--name") == 0) {
+            if (*value == '\0' || strlen(value) > MW_MAX_SERVER_NAME) {
+                return invalid_config(config, "invalid name (1..63 bytes)");
+            }
+            name = value;
         } else if (strcmp(argv[i], "--root") == 0) {
             root = value;
         } else {
@@ -101,7 +107,11 @@ int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
         perror("root");
         return invalid_config(config, "cannot open root directory");
     }
-    (void)snprintf(config->name, sizeof(config->name), "server-%u", (unsigned int)config->port);
+    if (name != NULL) {
+        memcpy(config->name, name, strlen(name) + 1);
+    } else {
+        (void)snprintf(config->name, sizeof(config->name), "server-%u", (unsigned int)config->port);
+    }
     return MW_EXIT_SUCCESS;
 }
 

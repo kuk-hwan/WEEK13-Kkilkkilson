@@ -9,6 +9,7 @@ int main(int argc, char **argv) {
         {"config defaults and cleanup", test_config_defaults},
         {"config options", test_config_options},
         {"config invalid arguments", test_config_errors},
+        {"config name", test_config_name},
         {"config workers and queue", test_config_pool_options},
         {"pool full rejection and cleanup", test_pool_rejects_when_full_and_cleans_up},
         {"pool rejects bad sizes", test_pool_create_rejects_bad_sizes},
