@@ -28,6 +28,8 @@ static const char *reason(int status) {
         return "Request Timeout";
     case 431:
         return "Request Header Fields Too Large";
+    case 503:
+        return "Service Unavailable";
     default:
         return "Internal Server Error";
     }
@@ -55,14 +57,48 @@ static int send_head(const mw_config_t *config, int fd, int status, uintmax_t le
     return mw_net_write_all(fd, head, (size_t)size, deadline);
 }
 
-static void send_error(const mw_config_t *config, int fd, int status) {
+static void send_error_until(const mw_config_t *config, int fd, int status,
+                             mw_deadline_t deadline) {
     char body[160];
     int size =
         snprintf(body, sizeof(body), "<!doctype html><h1>%d %s</h1>\n", status, reason(status));
-    mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
     if (size >= 0 && (size_t)size < sizeof(body) &&
         send_head(config, fd, status, (uintmax_t)size, deadline) == 0) {
         (void)mw_net_write_all(fd, body, (size_t)size, deadline);
+    }
+}
+
+static void send_error(const mw_config_t *config, int fd, int status) {
+    send_error_until(config, fd, status, mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+}
+
+/* The accepting thread writes this, so it gets a short deadline instead of the request one. */
+#define OVERLOAD_WRITE_TIMEOUT_MS 100
+
+static void reject_overloaded(const mw_config_t *config, int fd) {
+    send_error_until(config, fd, 503, mw_net_now_ms() + OVERLOAD_WRITE_TIMEOUT_MS);
+    /* Discard request bytes already received so close does not turn into a reset. */
+    char discard[512];
+    (void)recv(fd, discard, sizeof(discard), MSG_DONTWAIT);
+}
+
+/* A failed accept is retried unless the listener itself is unusable. */
+static bool accept_error_is_transient(int error) {
+    switch (error) {
+    case EINTR:
+    case ECONNABORTED:
+    case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+    case EWOULDBLOCK:
+#endif
+    case EPROTO:
+    case EMFILE:
+    case ENFILE:
+    case ENOBUFS:
+    case ENOMEM:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -160,6 +196,11 @@ static void handle_connection(const mw_config_t *config, int client) {
     send_error(config, client, 431);
 }
 
+/* Wrapper over the bootstrap handler above; #5 and #6 replace it with the real app module. */
+void mw_app_handle_connection(mw_runtime_t *runtime, int client_fd) {
+    handle_connection(runtime->config, client_fd);
+}
+
 int mw_server_run(mw_config_t *config) {
     struct sigaction ignore = {.sa_handler = SIG_IGN};
     struct sigaction previous;
@@ -174,20 +215,38 @@ int mw_server_run(mw_config_t *config) {
         (void)sigaction(SIGPIPE, &previous, NULL);
         return MW_EXIT_RUNTIME_ERROR;
     }
+    mw_runtime_t runtime = {.config = config};
+    atomic_init(&runtime.stopping, false);
+    mw_pool_t *pool = NULL;
+    if (mw_pool_create(&runtime, &pool) == -1) {
+        perror("thread pool");
+        (void)close(listener);
+        (void)sigaction(SIGPIPE, &previous, NULL);
+        return MW_EXIT_RUNTIME_ERROR;
+    }
     fprintf(stderr, "Listening on http://%s:%u (root: %s)\n", config->host,
             (unsigned int)config->port, config->root);
     for (;;) {
         int client = accept(listener, NULL, NULL);
         if (client == -1) {
-            if (errno == EINTR || errno == ECONNABORTED) {
-                continue;
+            if (!accept_error_is_transient(errno)) {
+                perror("accept");
+                break;
             }
-            perror("accept");
-            break;
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+                /* Out of descriptors or memory: back off briefly instead of spinning. */
+                perror("accept");
+                struct timespec pause = {.tv_sec = 0, .tv_nsec = 10L * 1000L * 1000L};
+                (void)nanosleep(&pause, NULL);
+            }
+            continue;
         }
-        handle_connection(config, client);
-        (void)close(client);
+        if (!mw_pool_submit(pool, client)) {
+            reject_overloaded(config, client);
+            (void)close(client);
+        }
     }
+    mw_pool_destroy(pool);
     (void)close(listener);
     (void)sigaction(SIGPIPE, &previous, NULL);
     return MW_EXIT_RUNTIME_ERROR;

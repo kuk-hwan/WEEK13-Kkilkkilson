@@ -4,13 +4,17 @@
 #include <string.h>
 
 int main(int argc, char **argv) {
-    const test_case_t tests[] = {{"spec contract", test_spec_contract},
-                                 {"config defaults and cleanup", test_config_defaults},
-                                 {"config options", test_config_options},
-                                 {"config invalid arguments", test_config_errors},
-                                 {"read and absolute deadline", test_net_read_deadline},
-                                 {"write all with small send buffer", test_net_write_all},
-                                 {"write absolute deadline", test_net_write_deadline}};
+    const test_case_t tests[] = {
+        {"spec contract", test_spec_contract},
+        {"config defaults and cleanup", test_config_defaults},
+        {"config options", test_config_options},
+        {"config invalid arguments", test_config_errors},
+        {"config workers and queue", test_config_pool_options},
+        {"pool full rejection and cleanup", test_pool_rejects_when_full_and_cleans_up},
+        {"pool rejects bad sizes", test_pool_create_rejects_bad_sizes},
+        {"read and absolute deadline", test_net_read_deadline},
+        {"write all with small send buffer", test_net_write_all},
+        {"write absolute deadline", test_net_write_deadline}};
     bool force_failure = false;
     if (argc == 2 && strcmp(argv[1], "--self-test-failure") == 0) {
         force_failure = true;

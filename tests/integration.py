@@ -7,6 +7,7 @@ import socket
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 
@@ -23,11 +24,12 @@ def assert_no_sanitizer_errors(log):
 
 
 @contextmanager
-def running_server(root, port=None):
+def running_server(root, port=None, extra_args=()):
     port = free_port() if port is None else port
     with tempfile.TemporaryFile(mode="w+b") as log:
         process = subprocess.Popen(
-            [str(BINARY), "--host", "127.0.0.1", "--port", str(port), "--root", str(root)],
+            [str(BINARY), "--host", "127.0.0.1", "--port", str(port), "--root", str(root),
+             *extra_args],
             stdout=subprocess.DEVNULL, stderr=log,
         )
         try:
@@ -219,6 +221,111 @@ class FirstResponseTests(unittest.TestCase):
                     status, headers, _ = request(port)
                     self.assertEqual(status, "HTTP/1.1 403 Forbidden")
                     self.assert_server_header(headers, port)
+
+
+class ConcurrencyTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-pool-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"<!doctype html><h1>pool</h1>\n")
+
+    def test_fifty_concurrent_clients_all_get_200(self):
+        clients = 50
+        results = [None] * clients
+        barrier = threading.Barrier(clients)
+
+        def client(index):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=8) as conn:
+                    barrier.wait(timeout=8)
+                    # A slow sender holds a worker; a serial server would need 50 * 0.2 s.
+                    conn.sendall(b"GET / HTTP/1.1\r\nHost: local")
+                    time.sleep(0.2)
+                    conn.sendall(b"host\r\n\r\n")
+                    results[index] = read_response(conn)[0]
+            except Exception as error:  # reported by the assertion below
+                results[index] = repr(error)
+
+        with running_server(self.root) as port:
+            threads = [threading.Thread(target=client, args=(i,)) for i in range(clients)]
+            started = time.monotonic()
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=12)
+            elapsed = time.monotonic() - started
+        self.assertEqual(results, ["HTTP/1.1 200 OK"] * clients)
+        self.assertLess(elapsed, 6)
+
+    def test_full_queue_gets_503_and_server_recovers(self):
+        with running_server(self.root, extra_args=("--workers", "1", "--queue", "1")) as port:
+            # The readiness probe briefly holds the only queue slot; let the worker drain it.
+            time.sleep(0.3)
+            # The first silent connection occupies the only worker, the second fills the queue.
+            busy = socket.create_connection(("127.0.0.1", port), timeout=3)
+            time.sleep(0.3)
+            queued = socket.create_connection(("127.0.0.1", port), timeout=3)
+            time.sleep(0.3)
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=3) as overflow:
+                    status, headers, body = read_response(overflow)
+                self.assertEqual(status, "HTTP/1.1 503 Service Unavailable")
+                self.assertEqual(headers["Connection"], "close")
+                self.assertEqual(headers["Server"], f"server-{port}")
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+            finally:
+                busy.close()
+                queued.close()
+            status, _, _ = request(port)
+            self.assertEqual(status, "HTTP/1.1 200 OK")
+
+    def test_overflow_does_not_stall_accept_on_slow_client(self):
+        with running_server(self.root, extra_args=("--workers", "1", "--queue", "1")) as port:
+            time.sleep(0.3)  # let the worker drain the readiness probe
+            busy = socket.create_connection(("127.0.0.1", port), timeout=3)
+            time.sleep(0.3)
+            queued = socket.create_connection(("127.0.0.1", port), timeout=3)
+            time.sleep(0.3)
+            try:
+                # Rejected clients never read; accept must keep going quickly anyway.
+                stalled = [socket.create_connection(("127.0.0.1", port), timeout=3)
+                           for _ in range(20)]
+                started = time.monotonic()
+                with socket.create_connection(("127.0.0.1", port), timeout=3) as last:
+                    status, _, _ = read_response(last)
+                self.assertEqual(status, "HTTP/1.1 503 Service Unavailable")
+                self.assertLess(time.monotonic() - started, 2)
+                for conn in stalled:
+                    conn.close()
+            finally:
+                busy.close()
+                queued.close()
+
+    def test_pool_options_out_of_range_are_argument_errors(self):
+        variants = (["--workers", "0"], ["--workers", "129"], ["--workers", "x"],
+                    ["--workers", ""], ["--workers"], ["--queue", "0"], ["--queue", "4097"],
+                    ["--queue", "-1"], ["--queue", "x"], ["--queue"])
+        for args in variants:
+            with self.subTest(args=args):
+                result = subprocess.run([str(BINARY), "--root", str(self.root), *args],
+                                        capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(b"usage:", result.stderr)
+                assert_no_sanitizer_errors(result.stderr.decode())
+
+    def test_usage_mentions_pool_options(self):
+        result = subprocess.run([str(BINARY), "--workers", "0"], capture_output=True, timeout=5)
+        self.assertIn(b"--workers", result.stderr)
+        self.assertIn(b"--queue", result.stderr)
+
+    def test_pool_options_at_limits_start(self):
+        for args in (["--workers", "1", "--queue", "1"], ["--workers", "128", "--queue", "4096"]):
+            with self.subTest(args=args):
+                with running_server(self.root, extra_args=args) as port:
+                    time.sleep(0.3)  # let the worker drain the readiness probe
+                    status, _, _ = request(port)
+                    self.assertEqual(status, "HTTP/1.1 200 OK")
 
 
 if __name__ == "__main__":
