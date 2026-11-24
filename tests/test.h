@@ -20,6 +20,8 @@ typedef struct {
 } test_case_t;
 
 bool test_spec_contract(void);
+bool test_static_mime(void);
+bool test_static_decode(void);
 bool test_config_defaults(void);
 bool test_config_options(void);
 bool test_config_errors(void);
