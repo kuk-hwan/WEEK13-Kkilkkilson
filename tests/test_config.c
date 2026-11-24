@@ -1,0 +1,56 @@
+#include "mini_webserver.h"
+#include "test.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <unistd.h>
+
+bool test_config_defaults(void) {
+    mw_config_t config;
+    char *args[] = {"mini-webserver"};
+    CHECK(mw_config_parse(&config, 1, args) == 0);
+    CHECK(strcmp(config.host, "127.0.0.1") == 0);
+    CHECK(config.port == 8080);
+    CHECK(strcmp(config.name, "server-8080") == 0);
+    CHECK(config.root != NULL && config.root[0] == '/');
+    CHECK(fcntl(config.root_fd, F_GETFD) >= 0);
+    int owned_fd = config.root_fd;
+    mw_config_destroy(&config);
+    CHECK(config.root == NULL && config.root_fd == -1);
+    CHECK(fcntl(owned_fd, F_GETFD) == -1 && errno == EBADF);
+    mw_config_destroy(&config);
+    return true;
+}
+
+bool test_config_options(void) {
+    mw_config_t config;
+    char *args[] = {"mini-webserver", "--host", "0.0.0.0", "--port", "65535", "--root", "public"};
+    CHECK(mw_config_parse(&config, 7, args) == 0);
+    CHECK(strcmp(config.host, "0.0.0.0") == 0);
+    CHECK(config.port == 65535);
+    CHECK(strcmp(config.name, "server-65535") == 0);
+    mw_config_destroy(&config);
+    return true;
+}
+
+bool test_config_errors(void) {
+    mw_config_t config;
+    const char *ports[] = {"", "0", "65536", "-1", "+80", " 80", "80x", "9999999999999999999999"};
+    for (size_t i = 0; i < sizeof(ports) / sizeof(ports[0]); i++) {
+        char *args[] = {"mini-webserver", "--port", (char *)ports[i]};
+        CHECK(mw_config_parse(&config, 3, args) == 2);
+        CHECK(config.root == NULL && config.root_fd == -1);
+        mw_config_destroy(&config);
+    }
+    char *unknown[] = {"mini-webserver", "--unknown", "value"};
+    CHECK(mw_config_parse(&config, 3, unknown) == 2);
+    char *missing[] = {"mini-webserver", "--root"};
+    CHECK(mw_config_parse(&config, 2, missing) == 2);
+    char *host[] = {"mini-webserver", "--host", "not-an-ip"};
+    CHECK(mw_config_parse(&config, 3, host) == 2);
+    char *root_file[] = {"mini-webserver", "--root", "public/index.html"};
+    CHECK(mw_config_parse(&config, 3, root_file) == 2);
+    mw_config_destroy(&config);
+    return true;
+}
