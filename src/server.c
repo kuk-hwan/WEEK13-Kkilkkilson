@@ -32,10 +32,12 @@ static void send_error(int fd, int status, bool head_only) {
 #define OVERLOAD_WRITE_TIMEOUT_MS 100
 
 static void reject_overloaded(int fd) {
-    (void)mw_http_send_error(fd, 503, false, mw_net_now_ms() + OVERLOAD_WRITE_TIMEOUT_MS);
-    /* Discard request bytes already received so close does not turn into a reset. */
+    if (mw_http_send_error(fd, 503, false, mw_net_now_ms() + OVERLOAD_WRITE_TIMEOUT_MS) == -1) {
+        return;
+    }
+    /* A successful write leaves fd nonblocking; discard only bytes already received. */
     char discard[512];
-    (void)recv(fd, discard, sizeof(discard), MSG_DONTWAIT);
+    (void)recv(fd, discard, sizeof(discard), 0);
 }
 
 /* A failed accept is retried unless the listener itself is unusable. */
