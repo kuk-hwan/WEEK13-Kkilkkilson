@@ -7,6 +7,7 @@ from email.utils import parsedate_to_datetime
 import os
 from pathlib import Path
 import select
+import signal
 import socket
 import struct
 import subprocess
@@ -29,6 +30,16 @@ def assert_no_sanitizer_errors(log):
 
 @contextmanager
 def running_server(root, port=None, extra_args=()):
+    with server_process(root, port, extra_args) as (process, port):
+        yield port
+        if process.poll() is not None:
+            raise AssertionError(f"Server stopped unexpectedly: {process.returncode}")
+
+
+@contextmanager
+def server_process(root, port=None, extra_args=()):
+    """Starts the server and yields (process, port). Cleanup terminates it if still running and
+    fails on sanitizer reports. Tests that stop the server themselves use this directly."""
     port = free_port() if port is None else port
     with tempfile.TemporaryFile(mode="w+b") as log:
         process = subprocess.Popen(
@@ -48,9 +59,7 @@ def running_server(root, port=None, extra_args=()):
                 if time.monotonic() >= deadline:
                     raise AssertionError("Server never became ready")
                 time.sleep(0.02)
-            yield port
-            if process.poll() is not None:
-                raise AssertionError(f"Server stopped unexpectedly: {process.returncode}")
+            yield process, port
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -153,9 +162,9 @@ class FirstResponseTests(unittest.TestCase):
         with running_server(self.root) as port:
             self.assert_html(request(port, (b"GET / HTTP/1.0\nHost: localhost\n\n",)), port)
 
-    def test_other_requests_are_404_in_bootstrap(self):
+    def test_missing_file_is_404(self):
         with running_server(self.root) as port:
-            for line in (b"GET /missing HTTP/1.1", b"GET /?v=1 HTTP/1.1"):
+            for line in (b"GET /missing HTTP/1.1",):
                 with self.subTest(line=line):
                     status, headers, body = request(port, (line + b"\r\nHost: localhost\r\n\r\n",))
                     self.assertEqual(status, "HTTP/1.1 404 Not Found")
@@ -332,6 +341,20 @@ class ConcurrencyTests(unittest.TestCase):
             finally:
                 for conn in (*stalled, busy, queued):
                     conn.close()
+
+    def test_shutdown_closes_the_queued_connection_and_finishes(self):
+        with server_process(self.root, extra_args=("--workers", "1", "--queue", "1")) as (
+                process, port):
+            busy, queued = self.fill_worker_and_queue(port)
+            try:
+                process.send_signal(signal.SIGTERM)
+                # The queued connection never reached a worker: it is closed, not served.
+                queued.settimeout(3)
+                self.assertEqual(queued.recv(1), b"")
+            finally:
+                queued.close()
+                busy.close()
+            self.assertEqual(wait_exit(process), 0)
 
     def test_pool_options_out_of_range_are_argument_errors(self):
         variants = (["--workers", "0"], ["--workers", "129"], ["--workers", "x"],
@@ -791,6 +814,213 @@ class ProxyTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(b"usage:", result.stderr)
                 assert_no_sanitizer_errors(result.stderr.decode())
+
+
+def wait_exit(process, seconds=5):
+    try:
+        return process.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(f"Server did not exit within {seconds}s of the signal") from None
+
+
+def wait_refused(port, seconds=5):
+    """Until the listener is gone (shutdown has begun); bounded, no fixed sleep."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        except ConnectionRefusedError:
+            return
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Listener still open {seconds}s after the signal")
+        time.sleep(0.02)
+
+
+class ShutdownTests(unittest.TestCase):
+    """Signals and graceful shutdown (docs/spec.md "시그널과 종료")."""
+
+    BIG = 8 * 1024 * 1024  # well above the loopback socket buffers
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-shutdown-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"x" * self.BIG)
+
+    def slow_reader(self, port):
+        """Sends GET / and reads only the response head, so the worker is mid-response."""
+        client = socket.socket()
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
+        client.settimeout(10)
+        client.connect(("127.0.0.1", port))
+        client.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        data = bytearray()
+        while b"\r\n\r\n" not in data:
+            chunk = client.recv(4096)
+            if not chunk:
+                raise AssertionError("Closed before the response head")
+            data.extend(chunk)
+        return client, bytes(data)
+
+    def test_sigint_and_sigterm_exit_zero_quickly(self):
+        for number in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=number.name):
+                with server_process(self.root) as (process, port):
+                    process.send_signal(number)
+                    self.assertEqual(wait_exit(process), 0)
+                    with self.assertRaises(ConnectionRefusedError):
+                        socket.create_connection(("127.0.0.1", port), timeout=2).close()
+
+    def test_disconnect_during_a_large_response_keeps_serving(self):
+        with running_server(self.root) as port:
+            for _ in range(5):
+                client, _ = self.slow_reader(port)  # the worker is blocked writing the body
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                client.close()
+            status, _, body = request(port)
+            self.assertEqual((status, len(body)), (OK_STATUS, self.BIG))
+
+    def test_response_in_flight_completes_after_sigterm(self):
+        with server_process(self.root) as (process, port):
+            client, received = self.slow_reader(port)
+            with client:
+                process.send_signal(signal.SIGTERM)
+                wait_refused(port)  # shutdown began while the response is still unread
+                self.assertIsNone(process.poll(), "Server left before its response was read")
+                head, _, body = received.partition(b"\r\n\r\n")
+                length = int(dict(line.split(": ", 1)
+                                  for line in head.decode("ascii").split("\r\n")[1:])
+                             ["Content-Length"])
+                body = bytearray(body)
+                while True:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+            self.assertEqual(len(body), length)
+            self.assertEqual(wait_exit(process), 0)
+
+    def test_idle_keep_alive_connection_is_closed_at_shutdown(self):
+        with running_server(self.root) as backend:
+            route = f"/api/=127.0.0.1:{backend}"
+            with server_process(self.root, extra_args=("--route", route)) as (process, proxy):
+                with socket.create_connection(("127.0.0.1", proxy), timeout=5) as client:
+                    client.sendall(b"GET /api/whoami HTTP/1.1\r\nHost: h\r\n\r\n")
+                    self.assertEqual(read_one_response(client)[0], OK_STATUS)
+                    process.send_signal(signal.SIGTERM)
+                    # Well under the 5 s idle timeout: the server closes it on its own.
+                    client.settimeout(3)
+                    self.assertEqual(client.recv(1), b"")
+                self.assertEqual(wait_exit(process), 0)
+
+
+class StaticFileTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mw-static-", dir="/tmp")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"root index")
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "index.html").write_bytes(b"docs index")
+        (self.root / "docs" / "한 글.CSS").write_bytes(b"body { color: red; }\n")
+        (self.root / "empty").mkdir()
+
+    def fetch(self, port, target, method=b"GET"):
+        return request(port, (method + b" " + target + b" HTTP/1.1\r\nHost: h\r\n"
+                              b"Connection: close\r\nContent-Length: 0\r\n\r\n",))
+
+    def test_directories_queries_and_encoded_filenames(self):
+        with running_server(self.root) as port:
+            for target, expected, mime in (
+                (b"/?v=1", b"root index", "text/html; charset=utf-8"),
+                (b"/docs", b"docs index", "text/html; charset=utf-8"),
+                (b"/docs/", b"docs index", "text/html; charset=utf-8"),
+                (b"/docs//index.html?x=%zz", b"docs index", "text/html; charset=utf-8"),
+                (b"/docs/%ED%95%9C%20%EA%B8%80.CSS?v=2", b"body { color: red; }\n",
+                 "text/css; charset=utf-8"),
+            ):
+                with self.subTest(target=target):
+                    status, headers, body = self.fetch(port, target)
+                    self.assertEqual((status, body), (OK_STATUS, expected))
+                    self.assertEqual(headers["Content-Type"], mime)
+                    self.assertEqual(int(headers["Content-Length"]), len(body))
+
+    def test_errors_and_path_escape_attempts(self):
+        outside = self.root.parent / (self.root.name + "-outside.txt")
+        outside.write_bytes(b"secret")
+        self.addCleanup(outside.unlink)
+        (self.root / "link").symlink_to(outside)
+        (self.root / "dir-link").symlink_to(self.root / "docs", target_is_directory=True)
+        (self.root / "dangling").symlink_to(self.root / "missing")
+        (self.root / "symlink-index").mkdir()
+        (self.root / "symlink-index" / "index.html").symlink_to(outside)
+        (self.root / "directory-index").mkdir()
+        (self.root / "directory-index" / "index.html").mkdir()
+        os.mkfifo(self.root / "fifo")
+        special = socket.socket(socket.AF_UNIX)
+        self.addCleanup(special.close)
+        special.bind(str(self.root / "socket"))
+        (self.root / "socket-index").mkdir()
+        index_socket = socket.socket(socket.AF_UNIX)
+        self.addCleanup(index_socket.close)
+        index_socket.bind(str(self.root / "socket-index" / "index.html"))
+        with running_server(self.root) as port:
+            for target, code in (
+                (b"/missing", 404), (b"/index.html/child", 404), (b"/index.html/", 404),
+                (b"/empty", 403), (b"/empty/", 403), (b"/link", 403), (b"/dir-link/index.html", 403),
+                (b"/dangling", 403), (b"/symlink-index/", 403), (b"/directory-index/", 403),
+                (b"/fifo", 403), (b"/socket", 403), (b"/socket-index/", 403), (b"/../secret", 403), (b"/./index.html", 403),
+                (b"/%2e%2e/secret", 403), (b"/docs%2f..%2findex.html", 403),
+                (b"/%00", 403), (b"/%1f", 403), (b"/%7f", 403),
+                (b"/%", 400), (b"/%0", 400), (b"/%GG", 400),
+            ):
+                with self.subTest(target=target):
+                    status, headers, body = self.fetch(port, target)
+                    self.assertTrue(status.startswith(f"HTTP/1.1 {code} "), status)
+                    self.assertEqual(int(headers["Content-Length"]), len(body))
+                    self.assertIn(str(code).encode(), body)
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses file permissions")
+    def test_unreadable_file_and_directory_are_403(self):
+        denied = self.root / "denied.txt"
+        denied.write_bytes(b"secret")
+        denied.chmod(0)
+        self.addCleanup(denied.chmod, 0o600)
+        locked = self.root / "locked"
+        locked.mkdir()
+        (locked / "a.txt").write_bytes(b"secret")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o700)
+        with running_server(self.root) as port:
+            for target in (b"/denied.txt", b"/locked/a.txt"):
+                status, _, _ = self.fetch(port, target)
+                self.assertEqual(status, "HTTP/1.1 403 Forbidden")
+
+    def test_head_matches_get_and_post_has_allow(self):
+        with running_server(self.root) as port:
+            for target in (b"/", b"/docs/", b"/docs/index.html", b"/missing", b"/empty/"):
+                get_status, get_headers, _ = self.fetch(port, target)
+                head_status, head_headers, body = self.fetch(port, target, b"HEAD")
+                self.assertEqual(head_status, get_status)
+                for key in ("Content-Type", "Content-Length", "Connection", "Server"):
+                    self.assertEqual(head_headers[key], get_headers[key])
+                self.assertIsNotNone(parsedate_to_datetime(head_headers["Date"]))
+                self.assertEqual(body, b"")
+            status, headers, body = self.fetch(port, b"/docs/index.html", b"POST")
+            self.assertEqual(status, "HTTP/1.1 405 Method Not Allowed")
+            self.assertEqual(headers["Allow"], "GET, HEAD")
+            self.assertEqual(int(headers["Content-Length"]), len(body))
+
+    def test_binary_multimegabyte_and_unknown_mime(self):
+        content = bytes(range(256)) * 20481
+        (self.root / "docs" / "large.bin").write_bytes(content)
+        with running_server(self.root) as port:
+            status, headers, body = self.fetch(port, b"/docs/large.bin")
+            self.assertEqual((status, body), (OK_STATUS, content))
+            self.assertEqual(int(headers["Content-Length"]), len(content))
+            self.assertEqual(headers["Content-Type"], "application/octet-stream")
 
 
 if __name__ == "__main__":
