@@ -186,3 +186,52 @@ bool test_config_route_lists(void) {
     CHECK(config.route_count == 0);
     return true;
 }
+
+static bool allowed(const mw_config_t *config, const char *address) {
+    struct in_addr client;
+    return inet_pton(AF_INET, address, &client) == 1 &&
+           mw_config_forward_allowed(config->forward_allow, config->forward_allow_count, client);
+}
+
+bool test_config_forward_allow(void) {
+    mw_config_t config;
+    char *off[] = {"mini-webserver"};
+    CHECK(mw_config_parse(&config, 1, off) == 0 && config.forward_allow_count == 0);
+    CHECK(!allowed(&config, "127.0.0.1")); /* empty list: nobody */
+    mw_config_destroy(&config);
+
+    char *several[] = {"mini-webserver", "--forward-allow", "10.1.2.3/8",   "--forward-allow",
+                       "192.168.1.7/32", "--forward-allow", "172.16.0.0/12"};
+    CHECK(mw_config_parse(&config, 7, several) == 0 && config.forward_allow_count == 3);
+    CHECK(allowed(&config, "10.0.0.0") &&
+          allowed(&config, "10.255.255.255")); /* host bits dropped */
+    CHECK(!allowed(&config, "9.255.255.255") && !allowed(&config, "11.0.0.0"));
+    CHECK(allowed(&config, "192.168.1.7"));
+    CHECK(!allowed(&config, "192.168.1.6") && !allowed(&config, "192.168.1.8"));
+    CHECK(allowed(&config, "172.16.0.0") && allowed(&config, "172.31.255.255"));
+    CHECK(!allowed(&config, "172.15.255.255") && !allowed(&config, "172.32.0.0"));
+    CHECK(!allowed(&config, "127.0.0.1"));
+    mw_config_destroy(&config);
+
+    char *everyone[] = {"mini-webserver", "--forward-allow", "1.2.3.4/0"};
+    CHECK(mw_config_parse(&config, 3, everyone) == 0);
+    CHECK(allowed(&config, "0.0.0.0") && allowed(&config, "255.255.255.255"));
+    mw_config_destroy(&config);
+
+    const char *bad[] = {"127.0.0.1", "127.0.0.1/",    "127.0.0.1/33", "127.0.0.1/-1",
+                         "127.0.0/8", "127.0.0.256/8", "/8",           "127.0.0.1/8x",
+                         "::1/128",   "h.example/8",   "127.0.0.1/8/8"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char *args[] = {"mini-webserver", "--forward-allow", (char *)bad[i]};
+        CHECK(mw_config_parse(&config, 3, args) == 2);
+    }
+    char *many[35] = {"mini-webserver"};
+    for (int i = 0; i < 17; i++) {
+        many[1 + 2 * i] = "--forward-allow";
+        many[2 + 2 * i] = "127.0.0.1/32";
+    }
+    CHECK(mw_config_parse(&config, 33, many) == 0 && config.forward_allow_count == 16);
+    mw_config_destroy(&config);
+    CHECK(mw_config_parse(&config, 35, many) == 2);
+    return true;
+}

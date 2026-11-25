@@ -15,6 +15,7 @@ int main(int argc, char **argv) {
         {"config workers and queue", test_config_pool_options},
         {"config route", test_config_route},
         {"config route backend lists", test_config_route_lists},
+        {"config forward allow list", test_config_forward_allow},
         {"pool full rejection and cleanup", test_pool_rejects_when_full_and_cleans_up},
         {"pool rejects bad sizes", test_pool_create_rejects_bad_sizes},
         {"read and absolute deadline", test_net_read_deadline},

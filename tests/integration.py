@@ -1374,6 +1374,124 @@ class RoutingTests(unittest.TestCase):
                 pass
 
 
+class ForwardProxyTests(unittest.TestCase):
+    """absolute-form requests with --forward-allow (docs/spec.md "Forward Proxy")."""
+
+    REPLY = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+    ALLOW_LOCAL = ("--forward-allow", "127.0.0.1/32")
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-forward-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"<h1>front</h1>\n")
+
+    def forward(self, proxy, target, method=b"GET", extra=b"", body=b""):
+        return request(proxy, (method + b" " + target + b" HTTP/1.1\r\nHost: ignored.example\r\n"
+                               b"Connection: close\r\n" + extra + b"\r\n" + body,))
+
+    def test_get_head_post_reach_the_destination_in_origin_form(self):
+        with fake_backend(self.REPLY) as (dest, received):
+            uri = b"http://127.0.0.1:%d" % dest
+            with running_server(self.root, extra_args=self.ALLOW_LOCAL) as proxy:
+                proxy_headers = (b"Proxy-Connection: keep-alive\r\nProxy-Authorization: Basic eDp5\r\n"
+                                 b"X-Forwarded-For: 6.6.6.6\r\nX-Keep: yes\r\n")
+                status, _, body = self.forward(proxy, uri + b"/a%20b?x=1&y=2", extra=proxy_headers)
+                self.assertEqual((status, body), (OK_STATUS, b"ok"))
+                status, headers, body = self.forward(proxy, uri + b"/h", b"HEAD")
+                self.assertEqual((status, body, headers["Content-Length"]), (OK_STATUS, b"", "2"))
+                status, _, body = self.forward(proxy, uri + b"/p", b"POST",
+                                               b"Content-Length: 5\r\n", b"hello")
+                self.assertEqual((status, body), (OK_STATUS, b"ok"))
+                self.assertEqual(self.forward(proxy, uri)[0], OK_STATUS)
+                self.assertEqual(self.forward(proxy, uri + b"?q=1")[0], OK_STATUS)
+        lines = [r.partition(b"\r\n\r\n")[0].decode("ascii").split("\r\n") for r in received]
+        self.assertEqual([l[0] for l in lines],
+                         ["GET /a%20b?x=1&y=2 HTTP/1.1", "HEAD /h HTTP/1.1", "POST /p HTTP/1.1",
+                          "GET / HTTP/1.1", "GET /?q=1 HTTP/1.1"])
+        for head in lines:
+            names = [line.split(":", 1)[0].lower() for line in head[1:]]
+            for gone in ("proxy-connection", "proxy-authorization"):
+                self.assertNotIn(gone, names)
+            for single in ("host", "connection", "x-forwarded-for", "content-length"):
+                self.assertEqual(names.count(single), 1, single)
+            headers = dict(line.split(": ", 1) for line in head[1:])
+            self.assertEqual(headers["Host"], f"127.0.0.1:{dest}")
+            self.assertEqual(headers["X-Forwarded-For"], "127.0.0.1")
+        self.assertIn("X-Keep: yes", lines[0])
+        self.assertTrue(received[2].endswith(b"\r\n\r\nhello"))
+
+    def test_client_outside_the_allow_list_gets_403_and_keeps_the_connection(self):
+        with fake_backend(self.REPLY) as (dest, received):
+            with running_server(self.root, extra_args=("--forward-allow", "10.0.0.0/8")) as proxy:
+                with socket.create_connection(("127.0.0.1", proxy), timeout=5) as client:
+                    client.sendall(b"GET http://127.0.0.1:%d/ HTTP/1.1\r\nHost: h\r\n\r\n" % dest)
+                    status, headers, body = read_one_response(client)
+                    self.assertEqual(status, "HTTP/1.1 403 Forbidden")
+                    self.assertEqual(headers["Connection"], "keep-alive")
+                    self.assertIn(b"<h1>403 ", body)
+                    client.sendall(b"GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+                    status, _, body = read_response(client)
+                    self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
+        self.assertEqual(received, [])
+
+    def test_off_by_default_absolute_form_is_400(self):
+        with running_server(self.root) as proxy:
+            status, headers, _ = self.forward(proxy, b"http://127.0.0.1:%d/" % free_port())
+        self.assertTrue(status.startswith("HTTP/1.1 400 "), status)
+        self.assertEqual(headers["Connection"], "close")
+
+    def test_refused_silent_and_unknown_destinations_keep_the_connection(self):
+        silent = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(silent.close)
+        cases = [(b"http://127.0.0.1:%d/" % free_port(), "HTTP/1.1 502 Bad Gateway"),
+                 (b"http://127.0.0.1:%d/" % silent.getsockname()[1], "HTTP/1.1 504 Gateway Timeout"),
+                 (b"http://no-such-host.invalid/", "HTTP/1.1 502 Bad Gateway")]
+        with running_server(self.root, extra_args=self.ALLOW_LOCAL) as proxy:
+            with socket.create_connection(("127.0.0.1", proxy), timeout=8) as client:
+                for target, expected in cases:
+                    with self.subTest(target=target):
+                        started = time.monotonic()
+                        client.sendall(b"GET " + target + b" HTTP/1.1\r\nHost: h\r\n\r\n")
+                        status, headers, _ = read_one_response(client)
+                        self.assertEqual(status, expected)
+                        self.assertEqual(headers["Connection"], "keep-alive")
+                        if "504" in expected:
+                            self.assertTrue(2.8 <= time.monotonic() - started < 4.5)
+                client.sendall(b"GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+                status, _, body = read_response(client)
+                self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
+
+    def test_forward_requests_skip_routes_and_origin_form_still_takes_them(self):
+        with fake_backend(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndest") as (dest, at_dest), \
+                fake_backend(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nroute") as (route, at_route):
+            args = ("--route", f"/api/=127.0.0.1:{route}", *self.ALLOW_LOCAL)
+            with running_server(self.root, extra_args=args) as proxy:
+                _, _, body = self.forward(proxy, b"http://127.0.0.1:%d/api/x" % dest)
+                self.assertEqual(body, b"dest")
+                _, _, body = self.forward(proxy, b"/api/x")
+                self.assertEqual(body, b"route")
+        self.assertEqual([r.split(b"\r\n", 1)[0] for r in at_dest], [b"GET /api/x HTTP/1.1"])
+        self.assertEqual([r.split(b"\r\n", 1)[0] for r in at_route], [b"GET /api/x HTTP/1.1"])
+
+    def test_invalid_forward_allow_is_argument_error(self):
+        def run(*values):
+            args = [x for value in values for x in ("--forward-allow", value)]
+            return subprocess.run([str(BINARY), "--root", str(self.root), *args],
+                                  capture_output=True, timeout=5)
+
+        for values in (["127.0.0.1"], ["127.0.0.1/33"], ["localhost/8"], ["127.0.0.1/8x"],
+                       ["127.0.0.1/32"] * 17):
+            with self.subTest(values=values[:2], count=len(values)):
+                result = run(*values)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(b"usage:", result.stderr)
+                assert_no_sanitizer_errors(result.stderr.decode())
+        with running_server(self.root, extra_args=[x for _ in range(16)
+                                                   for x in self.ALLOW_LOCAL]):
+            pass
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)

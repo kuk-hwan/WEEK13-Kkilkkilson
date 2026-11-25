@@ -204,6 +204,11 @@ static void peer_name(int fd, char *name, size_t capacity) {
 
 /* Answers one parsed request. Returns 0 when the response was sent in full. */
 static int serve_request(mw_config_t *config, int client, const mw_request_t *request, bool keep) {
+    if (request->target_form == MW_TARGET_ABSOLUTE) {
+        /* Forward requests never take a route (ADR-0001). */
+        return mw_proxy_forward(config, client, request, keep,
+                                mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS);
+    }
     mw_route_t *route = mw_proxy_match_route(config->routes, config->route_count, request->path);
     if (route != NULL) {
         return mw_proxy_serve(config, route, client, request, keep,
@@ -231,10 +236,13 @@ static void handle_connection(mw_runtime_t *runtime, int client) {
         uint64_t sent_before = mw_net_bytes_written();
         int result =
             mw_http_read_request(client, &input, &request, started + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
-        if (result == 0 && request.target_form != MW_TARGET_ORIGIN) {
-            /* No forward proxy yet (#31, #32): absolute-form is 400 and CONNECT 501, answered and
-             * closed like a parse error (docs/spec.md "Forward Proxy"). */
-            result = request.target_form == MW_TARGET_AUTHORITY ? 501 : 400;
+        if (result == 0 && request.target_form == MW_TARGET_AUTHORITY) {
+            /* No CONNECT tunnel yet (#32): 501, answered and closed like a parse error. */
+            result = 501;
+        } else if (result == 0 && request.target_form == MW_TARGET_ABSOLUTE &&
+                   config->forward_allow_count == 0) {
+            /* Forward proxy off: absolute-form is 400 as before (docs/spec.md "Forward Proxy"). */
+            result = 400;
         }
         if (result != 0) {
             /* Not a request we can serve: error page, then close. A silent idle close or a

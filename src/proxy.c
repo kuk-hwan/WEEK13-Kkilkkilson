@@ -45,8 +45,21 @@ static void append(mw_buffer_t *out, const void *bytes, size_t length) {
     out->length += length;
 }
 
-/* Method and target as received, HTTP/1.1, end-to-end headers, then our framing headers. */
-static int build_request(int client_fd, const mw_request_t *request, mw_buffer_t *out) {
+/* Absolute-form "http://host[:port]rest": rest is the origin-form target, "/" when it is empty or
+ * starts with the query. */
+static mw_slice_t origin_target(mw_slice_t target, bool *needs_slash) {
+    size_t i = 7U; /* "http://", any case; the parser checked it */
+    while (i < target.length && target.data[i] != '/' && target.data[i] != '?') {
+        i++;
+    }
+    *needs_slash = i == target.length || target.data[i] == '?';
+    return (mw_slice_t){target.data + i, target.length - i};
+}
+
+/* Reverse: method and target as received, the client's Host. Forward: origin-form target, Host
+ * from the URI and no Proxy-Authorization. Both: HTTP/1.1, end-to-end headers, our framing. */
+static int build_request(int client_fd, const mw_request_t *request, bool forward,
+                         mw_buffer_t *out) {
     struct sockaddr_storage peer;
     socklen_t peer_length = sizeof(peer);
     char address[INET6_ADDRSTRLEN];
@@ -55,13 +68,22 @@ static int build_request(int client_fd, const mw_request_t *request, mw_buffer_t
                     NI_NUMERICHOST) != 0) {
         return -1;
     }
+    char host[MW_MAX_BACKEND_HOST + 16U] = "";
+    mw_slice_t target = request->target;
+    bool needs_slash = false;
+    if (forward) {
+        target = origin_target(request->target, &needs_slash);
+        (void)snprintf(
+            host, sizeof(host), "Host: %.*s:%u\r\n", (int)request->destination_host.length,
+            (const char *)request->destination_host.data, (unsigned int)request->destination_port);
+    }
     char tail[128 + INET6_ADDRSTRLEN];
     int tail_length = snprintf(tail, sizeof(tail),
                                "Connection: close\r\nX-Forwarded-For: %s\r\n"
                                "Content-Length: %zu\r\n\r\n",
                                address, request->body.length);
-    size_t capacity = request->method.length + request->target.length + 16U + (size_t)tail_length +
-                      request->body.length;
+    size_t capacity = request->method.length + target.length + 17U + strlen(host) +
+                      (size_t)tail_length + request->body.length;
     for (size_t i = 0; i < request->headers.count; i++) {
         capacity +=
             request->headers.items[i].name.length + request->headers.items[i].value.length + 4U;
@@ -72,12 +94,17 @@ static int build_request(int client_fd, const mw_request_t *request, mw_buffer_t
     }
     append(out, request->method.data, request->method.length);
     append(out, " ", 1);
-    append(out, request->target.data, request->target.length);
+    if (needs_slash) {
+        append(out, "/", 1);
+    }
+    append(out, target.data, target.length);
     append(out, " HTTP/1.1\r\n", 11);
+    append(out, host, strlen(host));
     for (size_t i = 0; i < request->headers.count; i++) {
         const mw_header_t *header = &request->headers.items[i];
         if (mw_http_is_hop_by_hop(&request->headers, header->name) || ieq(header->name, "expect") ||
-            ieq(header->name, "x-forwarded-for") || ieq(header->name, "content-length")) {
+            ieq(header->name, "x-forwarded-for") || ieq(header->name, "content-length") ||
+            (forward && (ieq(header->name, "host") || ieq(header->name, "proxy-authorization")))) {
             continue;
         }
         append(out, header->name.data, header->name.length);
@@ -156,7 +183,7 @@ static int send_upstream(int fd, const mw_upstream_response_t *upstream, bool he
     return mw_http_send_response(fd, &response, head_only, keep_alive, deadline);
 }
 
-/* Like mw_http_send_error, but a backend failure does not end the client's connection. */
+/* Like mw_http_send_error, but a refusal (403) or backend failure keeps the client's connection. */
 static int send_gateway_error(int fd, int status, bool head_only, bool keep_alive,
                               mw_deadline_t deadline) {
     char body[64];
@@ -171,14 +198,15 @@ static int send_gateway_error(int fd, int status, bool head_only, bool keep_aliv
     return mw_http_send_response(fd, &response, head_only, keep_alive, deadline);
 }
 
-int mw_proxy_serve(const mw_config_t *config, mw_route_t *route, int client_fd,
-                   const mw_request_t *request, bool keep_alive, mw_deadline_t deadline) {
-    (void)config;
+/* Rewrite, exchange, relay: the steps both proxies share. A failure is a 502/504 page. */
+static int relay(int client_fd, const mw_request_t *request, const mw_backend_t *backend,
+                 bool forward, bool keep_alive, mw_deadline_t deadline) {
     bool head_only = request->method.length == 4 && memcmp(request->method.data, "HEAD", 4) == 0;
     mw_buffer_t outgoing = {NULL, 0, 0};
     mw_buffer_t incoming = {NULL, 0, 0};
-    int status = build_request(client_fd, request, &outgoing) == 0
-                     ? exchange(mw_proxy_next_backend(route), &outgoing, &incoming)
+    int status = backend == NULL ? 502
+                 : build_request(client_fd, request, forward, &outgoing) == 0
+                     ? exchange(backend, &outgoing, &incoming)
                      : 502;
     int result = -1;
     if (status == 0) {
@@ -196,4 +224,50 @@ int mw_proxy_serve(const mw_config_t *config, mw_route_t *route, int client_fd,
     free(outgoing.data);
     free(incoming.data);
     return result;
+}
+
+int mw_proxy_serve(const mw_config_t *config, mw_route_t *route, int client_fd,
+                   const mw_request_t *request, bool keep_alive, mw_deadline_t deadline) {
+    (void)config;
+    return relay(client_fd, request, mw_proxy_next_backend(route), false, keep_alive, deadline);
+}
+
+/* The destination's first IPv4 address. Blocking: DNS time is outside the upstream deadline. */
+static bool resolve_destination(const mw_request_t *request, mw_backend_t *destination) {
+    size_t length = request->destination_host.length;
+    if (length > MW_MAX_BACKEND_HOST) {
+        return false;
+    }
+    memcpy(destination->host, request->destination_host.data, length);
+    destination->host[length] = '\0';
+    destination->port = request->destination_port;
+    char port[8];
+    (void)snprintf(port, sizeof(port), "%u", (unsigned int)destination->port);
+    struct addrinfo hints = {
+        .ai_family = AF_INET, .ai_socktype = SOCK_STREAM, .ai_flags = AI_NUMERICSERV};
+    struct addrinfo *found = NULL;
+    if (getaddrinfo(destination->host, port, &hints, &found) != 0) {
+        return false;
+    }
+    memcpy(&destination->address, found->ai_addr, found->ai_addrlen);
+    destination->address_length = found->ai_addrlen;
+    freeaddrinfo(found);
+    return true;
+}
+
+int mw_proxy_forward(const mw_config_t *config, int client_fd, const mw_request_t *request,
+                     bool keep_alive, mw_deadline_t deadline) {
+    bool head_only = request->method.length == 4 && memcmp(request->method.data, "HEAD", 4) == 0;
+    struct sockaddr_in peer;
+    socklen_t peer_length = sizeof(peer);
+    if (getpeername(client_fd, (struct sockaddr *)&peer, &peer_length) == -1 ||
+        peer.sin_family != AF_INET ||
+        !mw_config_forward_allowed(config->forward_allow, config->forward_allow_count,
+                                   peer.sin_addr)) {
+        return send_gateway_error(client_fd, 403, head_only, keep_alive, deadline);
+    }
+    mw_backend_t destination;
+    return relay(client_fd, request,
+                 resolve_destination(request, &destination) ? &destination : NULL, true, keep_alive,
+                 deadline);
 }

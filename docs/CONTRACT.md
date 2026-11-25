@@ -14,6 +14,7 @@
 | 요청 본문 | 1 MiB | `MW_MAX_BODY_BYTES` |
 | 백엔드 수신 | 8 MiB | `MW_MAX_UPSTREAM_BYTES` |
 | 라우트 / 라우트당 백엔드 | 16 / 8 | `MW_MAX_ROUTES` / `MW_MAX_BACKENDS` |
+| 허용 목록 항목 | 16 | `MW_MAX_FORWARD_ALLOW` |
 | 작업자 | 1~128, 기본 8 | `MW_MIN_WORKERS` / `MW_MAX_WORKERS` / `MW_DEFAULT_WORKERS` |
 | 연결 큐 | 1~4096, 기본 64 | `MW_MIN_QUEUE_CAPACITY` / `MW_MAX_QUEUE_CAPACITY` / `MW_DEFAULT_QUEUE_CAPACITY` |
 | 서버 이름 | 63바이트 | `MW_MAX_SERVER_NAME` |
@@ -77,8 +78,9 @@
   세 형식 모두 같다.
 - 요청 줄의 오류 순서는 형식 400 → 버전 505 → 메서드 501이다. 그래서 `PUT http://h/`는 400,
   `PUT /`는 501이다. 헤더 검사(411·413·417, `Transfer-Encoding`의 501 등)는 그 뒤에 한다.
-- 포워드 프록시가 들어오기 전(#31·#32)에는 app이 absolute-form을 400, CONNECT를 501로 답하고
-  연결을 닫는다. 파싱 오류와 같은 경로라 접근 로그의 메서드·경로도 `-`다.
+- 포워드 프록시가 꺼져 있으면(`forward_allow_count == 0`) app이 absolute-form을 400으로 답하고
+  연결을 닫는다. CONNECT는 터널(#32) 전까지 켜져 있어도 501이다. 둘 다 파싱 오류와 같은 경로라
+  접근 로그의 메서드·경로도 `-`다.
 
 ### 정적 파일
 
@@ -93,6 +95,20 @@
   쿼리를 제외한 원문 경로를 사용하고, 최장 일치와 접두사 경계를 검사한다.
 - `mw_proxy_next_backend(route)`는 다음 백엔드를 반환한다. 설정 검증이 끝난 라우트에는
   백엔드가 적어도 하나 있다. 선택 카운터의 갱신만 잠그며 I/O 중에는 잠그지 않는다.
+
+### 허용 목록
+
+- `mw_cidr_t`는 `network`·`mask`를 호스트 바이트 순서로 담는다. 설정이 `a.b.c.d/길이`를 읽을 때
+  길이 밖의 비트를 지운다(`10.1.2.3/8`은 `10.0.0.0/8`).
+- `mw_config_forward_allowed(allow, count, client)`는 순수 함수다. `client`는 `sockaddr_in`의
+  `sin_addr` 그대로(네트워크 바이트 순서) 받는다. 목록이 비었으면 언제나 false다.
+
+### 포워드 요청
+
+- `mw_proxy_forward(config, client_fd, request, keep_alive, deadline)`는 absolute-form 요청만
+  받는다. 클라이언트 연결 주소가 목록 밖이면 403, 목적지 이름을 못 찾으면 502를 보낸다.
+  나머지 재작성·주고받기·응답 전달은 `mw_proxy_serve`와 같은 코드를 쓴다. 403·502·504 뒤에도
+  `keep_alive`를 그대로 지킨다. 목적지 FD는 `proxy`가 닫는다.
 
 ### 백엔드 응답
 

@@ -13,7 +13,7 @@ static int invalid_config(mw_config_t *config, const char *message) {
     fprintf(stderr,
             "%s\nusage: mini-webserver [--host IPv4] [--port 1..65535] [--root directory]"
             " [--workers 1..128] [--queue 1..4096] [--name name]"
-            " [--route /prefix=host:port[,host:port...]]...\n",
+            " [--route /prefix=host:port[,host:port...]]... [--forward-allow IPv4/length]...\n",
             message);
     mw_config_destroy(config);
     return MW_EXIT_ARGUMENT_ERROR;
@@ -129,6 +129,37 @@ static bool parse_route(mw_config_t *config, const char *text) {
     return true;
 }
 
+/* "a.b.c.d/0..32". Host bits past the length are dropped, so 10.1.2.3/8 means 10.0.0.0/8. */
+static bool parse_forward_allow(mw_config_t *config, const char *text) {
+    const char *slash = strchr(text, '/');
+    char address_text[INET_ADDRSTRLEN];
+    struct in_addr address;
+    size_t length = 0;
+    if (config->forward_allow_count == MW_MAX_FORWARD_ALLOW || slash == NULL ||
+        (size_t)(slash - text) >= sizeof(address_text)) {
+        return false;
+    }
+    memcpy(address_text, text, (size_t)(slash - text));
+    address_text[slash - text] = '\0';
+    if (inet_pton(AF_INET, address_text, &address) != 1 || !parse_size(slash + 1, 0, 32, &length)) {
+        return false;
+    }
+    uint32_t mask = length == 0 ? 0U : UINT32_MAX << (32U - length);
+    config->forward_allow[config->forward_allow_count++] =
+        (mw_cidr_t){ntohl(address.s_addr) & mask, mask};
+    return true;
+}
+
+bool mw_config_forward_allowed(const mw_cidr_t *allow, size_t count, struct in_addr client) {
+    uint32_t address = ntohl(client.s_addr);
+    for (size_t i = 0; i < count; i++) {
+        if ((address & allow[i].mask) == allow[i].network) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
     memset(config, 0, sizeof(*config));
     config->root_fd = -1;
@@ -174,6 +205,10 @@ int mw_config_parse(mw_config_t *config, int argc, char *const argv[]) {
                 return invalid_config(
                     config,
                     "invalid route (/prefix=host:port[,host:port...], max 16 routes, 8 backends)");
+            }
+        } else if (strcmp(argv[i], "--forward-allow") == 0) {
+            if (!parse_forward_allow(config, value)) {
+                return invalid_config(config, "invalid forward allow (IPv4/0..32, max 16)");
             }
         } else {
             return invalid_config(config, "unknown option");
