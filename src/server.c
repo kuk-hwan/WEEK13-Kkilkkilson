@@ -236,8 +236,24 @@ static void handle_connection(mw_runtime_t *runtime, int client) {
         uint64_t sent_before = mw_net_bytes_written();
         int result =
             mw_http_read_request(client, &input, &request, started + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
+        if (result == 0 && request.target_form == MW_TARGET_AUTHORITY &&
+            config->forward_allow_count > 0) {
+            /* CONNECT: the tunnel holds this worker until it ends, then the connection closes.
+             * Bytes after the head go to the destination first. */
+            size_t head = (size_t)(request.body.data - input.data);
+            int status = mw_proxy_tunnel(runtime, client, &request,
+                                         (mw_slice_t){input.data + head, input.length - head});
+            if (status != 200) {
+                drain_before_close(client);
+            }
+            mw_request_t shown = request;
+            shown.path = request.target;
+            log_access(peer, &shown, status, mw_net_bytes_written() - sent_before,
+                       mw_net_now_ms() - started);
+            break;
+        }
         if (result == 0 && request.target_form == MW_TARGET_AUTHORITY) {
-            /* No CONNECT tunnel yet (#32): 501, answered and closed like a parse error. */
+            /* Forward proxy off: CONNECT is 501, answered and closed like a parse error. */
             result = 501;
         } else if (result == 0 && request.target_form == MW_TARGET_ABSOLUTE &&
                    config->forward_allow_count == 0) {

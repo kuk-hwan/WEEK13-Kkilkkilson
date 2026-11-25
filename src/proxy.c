@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <netdb.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,19 +256,86 @@ static bool resolve_destination(const mw_request_t *request, mw_backend_t *desti
     return true;
 }
 
+static bool client_allowed(const mw_config_t *config, int client_fd) {
+    struct sockaddr_in peer;
+    socklen_t peer_length = sizeof(peer);
+    return getpeername(client_fd, (struct sockaddr *)&peer, &peer_length) == 0 &&
+           peer.sin_family == AF_INET &&
+           mw_config_forward_allowed(config->forward_allow, config->forward_allow_count,
+                                     peer.sin_addr);
+}
+
 int mw_proxy_forward(const mw_config_t *config, int client_fd, const mw_request_t *request,
                      bool keep_alive, mw_deadline_t deadline) {
     bool head_only = request->method.length == 4 && memcmp(request->method.data, "HEAD", 4) == 0;
-    struct sockaddr_in peer;
-    socklen_t peer_length = sizeof(peer);
-    if (getpeername(client_fd, (struct sockaddr *)&peer, &peer_length) == -1 ||
-        peer.sin_family != AF_INET ||
-        !mw_config_forward_allowed(config->forward_allow, config->forward_allow_count,
-                                   peer.sin_addr)) {
+    if (!client_allowed(config, client_fd)) {
         return send_gateway_error(client_fd, 403, head_only, keep_alive, deadline);
     }
     mw_backend_t destination;
     return relay(client_fd, request,
                  resolve_destination(request, &destination) ? &destination : NULL, true, keep_alive,
                  deadline);
+}
+
+/* Short poll slices so a shutdown closes an open tunnel at once (like the keep-alive wait). */
+#define TUNNEL_POLL_SLICE_MS 100
+
+/* Relay until both sides are quiet for 5 s, either side ends or fails, or the server stops. A
+ * stalled reader can hold a write for up to 5 s too. No half-close: one EOF ends both. */
+static void relay_tunnel(const mw_runtime_t *runtime, int client_fd, int destination_fd) {
+    int fds[2] = {client_fd, destination_fd};
+    unsigned char buffer[16384];
+    mw_deadline_t idle = mw_net_now_ms() + MW_TUNNEL_IDLE_TIMEOUT_MS;
+    while (!atomic_load(&runtime->stopping)) {
+        struct pollfd entries[2] = {{.fd = client_fd, .events = POLLIN},
+                                    {.fd = destination_fd, .events = POLLIN}};
+        int ready = poll(entries, 2, TUNNEL_POLL_SLICE_MS);
+        if (ready == -1 && errno != EINTR) {
+            return;
+        }
+        mw_deadline_t now = mw_net_now_ms();
+        if (ready <= 0) {
+            if (now >= idle) {
+                return;
+            }
+            continue;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (entries[i].revents == 0) {
+                continue;
+            }
+            ssize_t count =
+                mw_net_read(fds[i], buffer, sizeof(buffer), now + MW_TUNNEL_IDLE_TIMEOUT_MS);
+            if (count <= 0 || mw_net_write_all(fds[1 - i], buffer, (size_t)count,
+                                               now + MW_TUNNEL_IDLE_TIMEOUT_MS) == -1) {
+                return;
+            }
+            idle = mw_net_now_ms() + MW_TUNNEL_IDLE_TIMEOUT_MS;
+        }
+    }
+}
+
+int mw_proxy_tunnel(const mw_runtime_t *runtime, int client_fd, const mw_request_t *request,
+                    mw_slice_t pending) {
+    mw_deadline_t deadline = mw_net_now_ms() + MW_REQUEST_TIMEOUT_MS;
+    if (!client_allowed(runtime->config, client_fd)) {
+        (void)send_gateway_error(client_fd, 403, false, false, deadline);
+        return 403;
+    }
+    mw_backend_t destination;
+    bool resolved = resolve_destination(request, &destination);
+    int fd = resolved ? mw_net_connect(&destination, mw_net_now_ms() + MW_UPSTREAM_TIMEOUT_MS) : -1;
+    if (fd == -1) {
+        int status = resolved ? failure_status() : 502;
+        (void)send_gateway_error(client_fd, status, false, false, deadline);
+        return status;
+    }
+    /* Not mw_http_send_response: a tunnel's 200 has no Content-Length. */
+    static const char established[] = "HTTP/1.1 200 Connection Established\r\n\r\n";
+    if (mw_net_write_all(client_fd, established, sizeof(established) - 1U, deadline) == 0 &&
+        mw_net_write_all(fd, pending.data, pending.length, deadline) == 0) {
+        relay_tunnel(runtime, client_fd, fd);
+    }
+    (void)close(fd);
+    return 200;
 }

@@ -19,6 +19,7 @@
 | 연결 큐 | 1~4096, 기본 64 | `MW_MIN_QUEUE_CAPACITY` / `MW_MAX_QUEUE_CAPACITY` / `MW_DEFAULT_QUEUE_CAPACITY` |
 | 서버 이름 | 63바이트 | `MW_MAX_SERVER_NAME` |
 | 요청 / 유휴 / 백엔드 시간 | 5000 / 5000 / 3000 ms | `MW_*_TIMEOUT_MS` |
+| 터널 유휴 | 5000 ms | `MW_TUNNEL_IDLE_TIMEOUT_MS` |
 | 연결당 요청 | 100 | `MW_MAX_REQUESTS_PER_CONNECTION` |
 
 길이는 모두 바이트 수다. 문자열 배열은 끝의 NUL을 위한 한 바이트를 추가한다.
@@ -78,9 +79,9 @@
   세 형식 모두 같다.
 - 요청 줄의 오류 순서는 형식 400 → 버전 505 → 메서드 501이다. 그래서 `PUT http://h/`는 400,
   `PUT /`는 501이다. 헤더 검사(411·413·417, `Transfer-Encoding`의 501 등)는 그 뒤에 한다.
-- 포워드 프록시가 꺼져 있으면(`forward_allow_count == 0`) app이 absolute-form을 400으로 답하고
-  연결을 닫는다. CONNECT는 터널(#32) 전까지 켜져 있어도 501이다. 둘 다 파싱 오류와 같은 경로라
-  접근 로그의 메서드·경로도 `-`다.
+- 포워드 프록시가 꺼져 있으면(`forward_allow_count == 0`) app이 absolute-form을 400, CONNECT를
+  501로 답하고 연결을 닫는다. 둘 다 파싱 오류와 같은 경로라 접근 로그의 메서드·경로도 `-`다.
+  켜져 있으면 CONNECT는 `mw_proxy_tunnel`로 가고, 접근 로그의 경로 자리에는 `host:port`가 찍힌다.
 
 ### 정적 파일
 
@@ -109,6 +110,18 @@
   받는다. 클라이언트 연결 주소가 목록 밖이면 403, 목적지 이름을 못 찾으면 502를 보낸다.
   나머지 재작성·주고받기·응답 전달은 `mw_proxy_serve`와 같은 코드를 쓴다. 403·502·504 뒤에도
   `keep_alive`를 그대로 지킨다. 목적지 FD는 `proxy`가 닫는다.
+
+### 터널
+
+- `mw_proxy_tunnel(runtime, client_fd, request, pending)`은 authority-form(CONNECT) 요청만 받는다.
+  목록 밖이면 403, 이름을 못 찾거나 연결이 실패하면 502, 연결 시간 초과(3초)면 504를 보낸다.
+  연결되면 `HTTP/1.1 200 Connection Established`를 공용 응답 함수 없이 `Content-Length` 없이 보내고,
+  `pending`(머리 뒤에 이미 받은 바이트, 입력 버퍼를 빌림)을 목적지로 먼저 넘긴 뒤 두 소켓을 `poll`한다.
+- 양쪽 모두 `MW_TUNNEL_IDLE_TIMEOUT_MS` 동안 바이트가 없거나, 한쪽이 EOF·오류이거나,
+  `runtime->stopping`이 켜지면(100 ms마다 확인) 끝난다. 반쪽 닫기와 전체 시간 상한은 없다.
+  한쪽이 읽지 않으면 쓰기도 최대 5초 기다린다.
+- 반환값은 보낸 상태 코드(200·403·502·504)다. 목적지 FD는 `proxy`가 닫고, 클라이언트 연결은
+  성공이든 실패든 app이 반환 뒤 닫는다(실패 응답 뒤에는 남은 바이트를 비우고 닫는다).
 
 ### 백엔드 응답
 
