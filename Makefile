@@ -18,7 +18,7 @@ SERVER_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 TEST_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_SOURCES) $(LIB_SOURCES))
 FORMAT_FILES = $(sort $(wildcard include/*.h src/*.c tests/*.c tests/*.h))
 
-.PHONY: all test sanitize-test valgrind bench format-check format clean
+.PHONY: all test smoke sanitize-test valgrind bench format-check format clean
 all: $(BUILD_DIR)/mini-webserver
 
 $(BUILD_DIR)/mini-webserver: $(SERVER_OBJECTS)
@@ -34,6 +34,9 @@ $(BUILD_DIR)/%.o: %.c
 test: $(BUILD_DIR)/test-unit $(BUILD_DIR)/mini-webserver
 	$(BUILD_DIR)/test-unit $(TEST_ARGS)
 	$(PYTHON) tests/integration.py --binary $(BUILD_DIR)/mini-webserver
+
+smoke: $(BUILD_DIR)/mini-webserver
+	bash tests/smoke.sh $(BUILD_DIR)/mini-webserver
 
 sanitize-test:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/sanitize \
