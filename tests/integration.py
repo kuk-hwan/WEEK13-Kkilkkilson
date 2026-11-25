@@ -430,6 +430,15 @@ class HttpParsingTests(unittest.TestCase):
                         self.assert_standard_headers(headers, port, body)
             self.assertEqual(request(port)[0], "HTTP/1.1 200 OK")
 
+    def test_connect_is_501_while_forward_proxy_is_off(self):
+        with running_server(self.root) as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+                client.sendall(b"CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n")
+                status, headers, body = read_response(client)  # EOF means closed
+            self.assertTrue(status.startswith("HTTP/1.1 501 "), status)
+            self.assertEqual(headers["Connection"], "close")
+            self.assert_standard_headers(headers, port, body)
+
     def test_post_405_has_allow_and_reads_body(self):
         with running_server(self.root) as port:
             status, headers, body = request(

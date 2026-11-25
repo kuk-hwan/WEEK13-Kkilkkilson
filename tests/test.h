@@ -38,6 +38,7 @@ bool test_net_bytes_written(void);
 bool test_http_valid_requests(void);
 bool test_http_need_more(void);
 bool test_http_bad_request(void);
+bool test_http_forward_targets(void);
 bool test_http_status_codes(void);
 bool test_http_limits(void);
 bool test_http_response_headers(void);

@@ -84,7 +84,7 @@ bool test_http_bad_request(void) {
         "GET / http/1.1\r\nHost: h\r\n\r\n",               /* version case */
         "GET / HTTP/1.10\r\nHost: h\r\n\r\n",              /* version format */
         "G(T / HTTP/1.1\r\nHost: h\r\n\r\n",               /* method is not a token */
-        "GET http://h/ HTTP/1.1\r\nHost: h\r\n\r\n",       /* absolute-form */
+        "PUT http://h/ HTTP/1.1\r\nHost: h\r\n\r\n",       /* absolute-form is GET/HEAD/POST */
         "GET * HTTP/1.1\r\nHost: h\r\n\r\n",               /* asterisk-form */
         "GET index HTTP/1.1\r\nHost: h\r\n\r\n",           /* not origin-form */
         "GET /a\x01 HTTP/1.1\r\nHost: h\r\n\r\n",          /* control byte in target */
@@ -118,6 +118,71 @@ bool test_http_bad_request(void) {
     mw_parse_result_t result =
         mw_http_parse_request_head((const unsigned char *)nul, sizeof(nul) - 1U, &request);
     CHECK(result.state == MW_PARSE_ERROR && result.status == 400);
+    return true;
+}
+
+bool test_http_forward_targets(void) {
+    mw_request_t request;
+    /* absolute-form: scheme in any case, port 80 by default, the URI's path split from its query.
+     * The Host header plays no part in the destination. */
+    CHECK(parse("GET HtTp://Example.com/a/b?x=1 HTTP/1.1\r\nHost: other\r\n\r\n", &request).state ==
+          MW_PARSE_COMPLETE);
+    CHECK(request.target_form == MW_TARGET_ABSOLUTE);
+    CHECK(slice_is(request.target, "HtTp://Example.com/a/b?x=1"));
+    CHECK(slice_is(request.destination_host, "Example.com") && request.destination_port == 80);
+    CHECK(slice_is(request.path, "/a/b") && slice_is(request.query, "x=1"));
+    /* An explicit port, and an empty path is "/". */
+    CHECK(parse("HEAD http://127.0.0.1:8081 HTTP/1.1\r\nHost: h\r\n\r\n", &request).state ==
+          MW_PARSE_COMPLETE);
+    CHECK(slice_is(request.destination_host, "127.0.0.1") && request.destination_port == 8081);
+    CHECK(slice_is(request.path, "/") && request.query.length == 0);
+    CHECK(parse("POST http://h:65535?q HTTP/1.0\r\nContent-Length: 0\r\n\r\n", &request).state ==
+          MW_PARSE_COMPLETE);
+    CHECK(request.destination_port == 65535);
+    CHECK(slice_is(request.path, "/") && slice_is(request.query, "q"));
+
+    /* authority-form: CONNECT host:port, no path. */
+    CHECK(parse("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n", &request)
+              .state == MW_PARSE_COMPLETE);
+    CHECK(request.target_form == MW_TARGET_AUTHORITY && slice_is(request.method, "CONNECT"));
+    CHECK(slice_is(request.destination_host, "example.com") && request.destination_port == 443);
+    CHECK(request.path.length == 0 && request.query.length == 0);
+
+    /* origin-form has no destination. */
+    CHECK(parse("GET /x HTTP/1.1\r\nHost: h\r\n\r\n", &request).state == MW_PARSE_COMPLETE);
+    CHECK(request.target_form == MW_TARGET_ORIGIN);
+    CHECK(request.destination_host.length == 0 && request.destination_port == 0);
+
+    static const char *const bad[] = {
+        "GET https://h/ HTTP/1.1\r\nHost: h\r\n\r\n",        /* https */
+        "GET ftp://h/ HTTP/1.1\r\nHost: h\r\n\r\n",          /* other scheme */
+        "GET http://user@h/ HTTP/1.1\r\nHost: h\r\n\r\n",    /* userinfo */
+        "GET http://[::1]:80/ HTTP/1.1\r\nHost: h\r\n\r\n",  /* IPv6 literal */
+        "GET http:///x HTTP/1.1\r\nHost: h\r\n\r\n",         /* empty host */
+        "GET http://:80/ HTTP/1.1\r\nHost: h\r\n\r\n",       /* empty host with a port */
+        "GET http://h:/ HTTP/1.1\r\nHost: h\r\n\r\n",        /* empty port */
+        "GET http://h:0/ HTTP/1.1\r\nHost: h\r\n\r\n",       /* port 0 */
+        "GET http://h:65536/ HTTP/1.1\r\nHost: h\r\n\r\n",   /* port too big */
+        "GET http://h:8x/ HTTP/1.1\r\nHost: h\r\n\r\n",      /* port not digits */
+        "GET http://h/ HTTP/1.1\r\n\r\n",                    /* HTTP/1.1 still needs Host */
+        "CONNECT h HTTP/1.1\r\nHost: h\r\n\r\n",             /* authority-form without port */
+        "CONNECT h: HTTP/1.1\r\nHost: h\r\n\r\n",            /* empty port */
+        "CONNECT :443 HTTP/1.1\r\nHost: h\r\n\r\n",          /* empty host */
+        "CONNECT [::1]:443 HTTP/1.1\r\nHost: h\r\n\r\n",     /* IPv6 literal */
+        "CONNECT u@h:443 HTTP/1.1\r\nHost: h\r\n\r\n",       /* userinfo */
+        "GET h:443 HTTP/1.1\r\nHost: h\r\n\r\n",             /* GET with authority-form */
+        "CONNECT / HTTP/1.1\r\nHost: h\r\n\r\n",             /* CONNECT with origin-form */
+        "CONNECT http://h:443/ HTTP/1.1\r\nHost: h\r\n\r\n", /* CONNECT with absolute-form */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        if (!status_is(bad[i], 400)) {
+            fprintf(stderr, "expected 400 for forward case %zu: %s\n", i, bad[i]);
+            return false;
+        }
+    }
+    /* The target is checked before the version, as for origin-form. */
+    CHECK(status_is("CONNECT h:443 HTTP/2.0\r\nHost: h\r\n\r\n", 505));
+    CHECK(status_is("CONNECT h HTTP/2.0\r\nHost: h\r\n\r\n", 400));
     return true;
 }
 
