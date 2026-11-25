@@ -1,43 +1,92 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="640" viewBox="0 0 1080 640" role="img" aria-labelledby="title desc">
-<title id="title">정적 파일 처리량</title><desc id="desc">작업자 8개 및 64개, 동시 50 및 100, Keep-Alive ON/OFF, 실패 건수</desc>
-<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#92999B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="g" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#2AA58B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="r" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#D94D50" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
-<rect width="1080" height="640" rx="22" fill="#161616"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="610" viewBox="0 0 1080 610" role="img" aria-labelledby="title desc">
+<title id="title">정적 파일 성능 측정</title>
+<desc id="desc">동시 연결 수, Keep-Alive 여부, 작업자 수에 따른 처리량, p95 응답 지연, 실패 건수. 각 지표의 막대는 모든 조건에서 동일 척도를 사용합니다.</desc>
+<rect x="0" y="0" width="1080" height="610" rx="22" fill="#161616" stroke="none"/>
 <g font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, Arial, sans-serif">
-<text x="32" y="45" font-size="26" font-weight="700" fill="#F5F5F5" text-anchor="start">Keep-Alive에 따른 처리량 변화</text>
-<text x="32" y="75" font-size="17" font-weight="400" fill="#BFC5C7" text-anchor="start">정적 파일 · req/s · 패널별 가로축 척도가 다름</text>
-<rect x="35" y="91" width="16" height="16" rx="3" fill="#D94D50" stroke="#D94D50" stroke-width="1.5"/>
-<text x="61" y="105" font-size="18" font-weight="400" fill="#F5F5F5" text-anchor="start">작업자 8개</text>
-<rect x="235" y="91" width="16" height="16" rx="3" fill="#2AA58B" stroke="#2AA58B" stroke-width="1.5"/>
-<text x="261" y="105" font-size="18" font-weight="400" fill="#F5F5F5" text-anchor="start">작업자 64개</text>
-<rect x="30" y="123" width="1020" height="164" rx="14" fill="#1C1E1E" stroke="#343A3A" stroke-width="1.5"/>
-<text x="50" y="158" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">Keep-Alive OFF</text>
-<text x="1030" y="158" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="end">척도: 0–7,000 req/s</text>
-<text x="50" y="210" font-size="20" font-weight="700" fill="#F5F5F5" text-anchor="start">동시 100</text>
-<rect x="230" y="188" width="560" height="22" rx="5" fill="#2C3030" stroke="none" stroke-width="0"/>
-<rect x="230" y="188" width="529.2264" height="22" rx="5" fill="#D94D50" stroke="none" stroke-width="0"/>
-<text x="805" y="206" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">6,615.33</text>
-<rect x="230" y="222" width="560" height="22" rx="5" fill="#2C3030" stroke="none" stroke-width="0"/>
-<rect x="230" y="222" width="558.2887999999999" height="22" rx="5" fill="#2AA58B" stroke="none" stroke-width="0"/>
-<text x="805" y="240" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">6,978.61</text>
-<text x="1030" y="268" font-size="17" font-weight="400" fill="#BFC5C7" text-anchor="end">실패 (8 / 64): 0 / 0</text>
-<rect x="30" y="300" width="1020" height="275" rx="14" fill="#1C1E1E" stroke="#343A3A" stroke-width="1.5"/>
-<text x="50" y="335" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">Keep-Alive ON</text>
-<text x="1030" y="335" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="end">척도: 0–1,200 req/s</text>
-<text x="50" y="387" font-size="20" font-weight="700" fill="#F5F5F5" text-anchor="start">동시 50</text>
-<rect x="230" y="365" width="560" height="22" rx="5" fill="#2C3030" stroke="none" stroke-width="0"/>
-<rect x="230" y="365" width="23.202666666666666" height="22" rx="5" fill="#D94D50" stroke="none" stroke-width="0"/>
-<text x="805" y="383" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">49.72</text>
-<rect x="230" y="399" width="560" height="22" rx="5" fill="#2C3030" stroke="none" stroke-width="0"/>
-<rect x="230" y="399" width="531.79" height="22" rx="5" fill="#2AA58B" stroke="none" stroke-width="0"/>
-<text x="805" y="417" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">1,139.55</text>
-<text x="1030" y="445" font-size="17" font-weight="400" fill="#BFC5C7" text-anchor="end">실패 (8 / 64): 24 / 0</text>
-<text x="50" y="503" font-size="20" font-weight="700" fill="#F5F5F5" text-anchor="start">동시 100</text>
-<rect x="230" y="481" width="560" height="22" rx="5" fill="#2C3030" stroke="none" stroke-width="0"/>
-<rect x="230" y="481" width="13.37" height="22" rx="5" fill="#D94D50" stroke="none" stroke-width="0"/>
-<text x="805" y="499" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">28.65</text>
-<rect x="230" y="515" width="560" height="22" rx="5" fill="#2C3030" stroke="none" stroke-width="0"/>
-<rect x="230" y="515" width="83.244" height="22" rx="5" fill="#2AA58B" stroke="none" stroke-width="0"/>
-<text x="805" y="533" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">178.38</text>
-<text x="1030" y="561" font-size="17" font-weight="400" fill="#BFC5C7" text-anchor="end">실패 (8 / 64): 48 / 27</text>
-<text x="36" y="611" font-size="22" font-weight="700" fill="#2AA58B" text-anchor="start">작업자를 늘려도 동시 접속 100에서는 실패가 남음</text>
+<text x="32" y="45" font-size="28" font-weight="700" fill="#F5F5F5" text-anchor="start">정적 파일 성능 측정</text>
+<text x="32" y="75" font-size="17" font-weight="400" fill="#BFC5C7" text-anchor="start">작업자 수 · 동시 연결 수 · Keep-Alive 여부에 따른 측정 결과</text>
+<rect x="34" y="95" width="15" height="15" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="58" y="108" font-size="16" font-weight="400" fill="#F5F5F5" text-anchor="start">작업자 8개</text>
+<rect x="225" y="95" width="15" height="15" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="249" y="108" font-size="16" font-weight="400" fill="#F5F5F5" text-anchor="start">작업자 64개</text>
+<rect x="30" y="130" width="1020" height="69" rx="12" fill="#242727" stroke="#343A3A"/>
+<text x="49" y="158" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="start">측정 조건</text>
+<text x="225" y="158" font-size="16" font-weight="700" fill="#F5F5F5" text-anchor="middle">작업자</text>
+<text x="300" y="157" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">Throughput</text>
+<text x="300" y="181" font-size="14" font-weight="400" fill="#BFC5C7" text-anchor="start">req/s · 0–7,000</text>
+<text x="557" y="157" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">p95 Latency</text>
+<text x="557" y="181" font-size="14" font-weight="400" fill="#BFC5C7" text-anchor="start">ms · 0–5,100</text>
+<text x="803" y="157" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="start">Failed Requests</text>
+<text x="803" y="181" font-size="14" font-weight="400" fill="#BFC5C7" text-anchor="start">건 · 0–50</text>
+<rect x="30" y="211" width="1020" height="100" rx="12" fill="#1C1E1E" stroke="#343A3A"/>
+<text x="49" y="247" font-size="17" font-weight="700" fill="#F5F5F5" text-anchor="start">Keep-Alive OFF</text>
+<text x="49" y="275" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="start">동시 연결 100</text>
+<path d="M 190 223 V 299 M 288 261 H 1033" stroke="#343A3A" fill="none"/>
+<text x="225" y="246" font-size="19" font-weight="700" fill="#8B9AAA" text-anchor="middle">8</text>
+<text x="517" y="237" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">6,615.33</text>
+<rect x="300" y="245" width="217" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="300" y="245" width="205.07522999999998" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="760" y="237" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">32</text>
+<rect x="557" y="245" width="203" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="557" y="245" width="1.2737254901960784" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="1027" y="237" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">0</text>
+<rect x="803" y="245" width="224" height="7" rx="3" fill="#303535" stroke="none"/>
+<text x="225" y="291" font-size="19" font-weight="700" fill="#2AA58B" text-anchor="middle">64</text>
+<text x="517" y="282" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">6,978.61</text>
+<rect x="300" y="290" width="217" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="300" y="290" width="216.33691" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="760" y="282" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">27</text>
+<rect x="557" y="290" width="203" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="557" y="290" width="1.0747058823529412" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="1027" y="282" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">0</text>
+<rect x="803" y="290" width="224" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="30" y="321" width="1020" height="100" rx="12" fill="#1C1E1E" stroke="#343A3A"/>
+<text x="49" y="357" font-size="17" font-weight="700" fill="#F5F5F5" text-anchor="start">Keep-Alive ON</text>
+<text x="49" y="385" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="start">동시 연결 50</text>
+<path d="M 190 333 V 409 M 288 371 H 1033" stroke="#343A3A" fill="none"/>
+<text x="225" y="356" font-size="19" font-weight="700" fill="#8B9AAA" text-anchor="middle">8</text>
+<text x="517" y="347" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">49.72</text>
+<rect x="300" y="355" width="217" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="300" y="355" width="1.54132" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="760" y="347" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">4,277</text>
+<rect x="557" y="355" width="203" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="557" y="355" width="170.24137254901962" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="1027" y="347" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">24</text>
+<rect x="803" y="355" width="224" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="803" y="355" width="107.52" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="225" y="401" font-size="19" font-weight="700" fill="#2AA58B" text-anchor="middle">64</text>
+<text x="517" y="392" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">1,139.55</text>
+<rect x="300" y="400" width="217" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="300" y="400" width="35.326049999999995" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="760" y="392" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">48</text>
+<rect x="557" y="400" width="203" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="557" y="400" width="1.9105882352941177" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="1027" y="392" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">0</text>
+<rect x="803" y="400" width="224" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="30" y="431" width="1020" height="100" rx="12" fill="#1C1E1E" stroke="#343A3A"/>
+<text x="49" y="467" font-size="17" font-weight="700" fill="#F5F5F5" text-anchor="start">Keep-Alive ON</text>
+<text x="49" y="495" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="start">동시 연결 100</text>
+<path d="M 190 443 V 519 M 288 481 H 1033" stroke="#343A3A" fill="none"/>
+<text x="225" y="466" font-size="19" font-weight="700" fill="#8B9AAA" text-anchor="middle">8</text>
+<text x="517" y="457" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">28.65</text>
+<rect x="300" y="465" width="217" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="300" y="465" width="0.8881499999999999" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="760" y="457" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">5,015</text>
+<rect x="557" y="465" width="203" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="557" y="465" width="199.61666666666667" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="1027" y="457" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">48</text>
+<rect x="803" y="465" width="224" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="803" y="465" width="215.04" height="7" rx="3" fill="#8B9AAA" stroke="none"/>
+<text x="225" y="511" font-size="19" font-weight="700" fill="#2AA58B" text-anchor="middle">64</text>
+<text x="517" y="502" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">178.38</text>
+<rect x="300" y="510" width="217" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="300" y="510" width="5.52978" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="760" y="502" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">49</text>
+<rect x="557" y="510" width="203" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="557" y="510" width="1.9503921568627451" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="1027" y="502" font-size="18" font-weight="700" fill="#F5F5F5" text-anchor="end">27</text>
+<rect x="803" y="510" width="224" height="7" rx="3" fill="#303535" stroke="none"/>
+<rect x="803" y="510" width="120.96" height="7" rx="3" fill="#2AA58B" stroke="none"/>
+<text x="32" y="567" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="start">1 KiB 응답 · 조합별 1,000요청 · 1회 측정</text>
+<text x="32" y="591" font-size="15" font-weight="400" fill="#BFC5C7" text-anchor="start">각 지표의 막대는 모든 조건에서 동일한 척도 사용 · 프록시 결과는 상세 측정표 참고</text>
 </g></svg>
