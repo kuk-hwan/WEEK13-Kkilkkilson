@@ -1,0 +1,24 @@
+flowchart TD
+    C["클라이언트"] -->|"TCP Handshake (커널)"| L["리스닝 소켓"]
+    L -->|"poll → accept()"| M["메인 스레드"]
+    M -->|"연결 FD 전달"| Q[("연결 큐")]
+    M -.->|"큐 포화"| E["503 응답 후 종료"]
+
+    Q --> W["작업자 스레드"]
+    W --> P["HTTP 요청 읽기 · 파싱"]
+
+    P -->|"CONNECT"| T["양방향 터널"]
+    P -->|"absolute-form"| F["Forward Proxy"]
+    P -->|"라우트 일치"| R["Reverse Proxy<br/>Round Robin"]
+    P -->|"/api"| D["동적 API"]
+    P -->|"그 밖"| S["정적 파일"]
+
+    F --> O["HTTP 응답 · 접근 로그"]
+    R --> O
+    D --> O
+    S --> O
+
+    O -->|"Keep-Alive"| P
+    O -->|"연결 종료"| X["연결 FD 닫기"]
+    T -->|"터널 종료"| X
+    X --> N["작업자 반환"]

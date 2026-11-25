@@ -1,0 +1,5 @@
+flowchart LR
+    A["수신 버퍼"] --> B["CRLF CRLF<br/>헤더 경계"]
+    B --> C["Content-Length<br/>본문 길이"]
+    C --> D["요청 처리"]
+    C -.->|"남은 바이트"| E["다음 요청"]

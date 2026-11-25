@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="479" viewBox="0 0 1080 479" role="img" aria-labelledby="title desc">
+<title id="title">주요 기능</title><desc id="desc">표: 주요 기능 | 구현 내용 / 웹 서버 | 정적 파일 제공, 동적 API (/api/whoami, /api/echo) / Reverse Proxy | 경로 기반 라우팅, 백엔드 라운드 로빈 분산 / Forward Proxy | HTTP 요청 전달, CONNECT 터널 / HTTP 연결 관리 | HTTP/1.0·1.1, Keep-Alive, 파이프라이닝 / 서버 운영 | 스레드 풀, 과부하 제어, 안전 종료, 접근 로그</desc>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#92999B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="g" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#2AA58B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="r" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#D94D50" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1080" height="479" rx="22" fill="#161616"/>
+<g font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, Arial, sans-serif">
+<text x="32" y="45" font-size="26" font-weight="700" fill="#F5F5F5" text-anchor="start">주요 기능</text>
+<rect x="30" y="72" width="1020" height="63.239999999999995" rx="0" fill="#104B41" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="106.7" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">주요 기능</text>
+<path d="M290 72 V135.24" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="106.7" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">구현 내용</text>
+<rect x="30" y="135.24" width="1020" height="63.239999999999995" rx="0" fill="#222626" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="169.94" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">웹 서버</text>
+<path d="M290 135.24 V198.48000000000002" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="169.94" font-size="22" font-weight="400" fill="#BFC5C7" text-anchor="start">정적 파일 제공, 동적 API (/api/whoami, /api/echo)</text>
+<rect x="30" y="198.48000000000002" width="1020" height="63.239999999999995" rx="0" fill="#1B1E1E" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="233.18" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">Reverse Proxy</text>
+<path d="M290 198.48000000000002 V261.72" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="233.18" font-size="22" font-weight="400" fill="#BFC5C7" text-anchor="start">경로 기반 라우팅, 백엔드 라운드 로빈 분산</text>
+<rect x="30" y="261.72" width="1020" height="63.239999999999995" rx="0" fill="#222626" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="296.42" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">Forward Proxy</text>
+<path d="M290 261.72 V324.96000000000004" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="296.42" font-size="22" font-weight="400" fill="#BFC5C7" text-anchor="start">HTTP 요청 전달, CONNECT 터널</text>
+<rect x="30" y="324.96000000000004" width="1020" height="63.239999999999995" rx="0" fill="#1B1E1E" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="359.66" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">HTTP 연결 관리</text>
+<path d="M290 324.96000000000004 V388.20000000000005" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="359.66" font-size="22" font-weight="400" fill="#BFC5C7" text-anchor="start">HTTP/1.0·1.1, Keep-Alive, 파이프라이닝</text>
+<rect x="30" y="388.20000000000005" width="1020" height="63.239999999999995" rx="0" fill="#222626" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="422.90000000000003" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="start">서버 운영</text>
+<path d="M290 388.20000000000005 V451.44000000000005" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="306" y="422.90000000000003" font-size="22" font-weight="400" fill="#BFC5C7" text-anchor="start">스레드 풀, 과부하 제어, 안전 종료, 접근 로그</text>
+</g></svg>
