@@ -22,6 +22,9 @@ bool test_proxy_match_route(void) {
           match(routes, 3, "/service/x") == &routes[2]);
     CHECK(match(routes, 3, "/service-other") == NULL && match(routes, 3, "/servicex") == NULL);
     CHECK(match(routes, 3, "/%61pi/x") == NULL); /* raw path, never decoded */
+    CHECK(match(routes, 3, "/api/%61dmin/x") == &routes[0] &&
+          match(routes, 3, "/api%2Fadmin/") == NULL);
+    CHECK(match(routes, 3, "/service/") == &routes[2] && match(routes, 3, "/servic") == NULL);
     CHECK(match(routes, 3, "/") == NULL && match(routes, 0, "/api/") == NULL);
     return true;
 }
