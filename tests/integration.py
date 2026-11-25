@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import socket
@@ -87,7 +88,7 @@ def read_response(client):
     return lines[0], headers, body
 
 
-def request(port, parts=(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",)):
+def request(port, parts=(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",)):
     with socket.create_connection(("127.0.0.1", port), timeout=8) as client:
         for part in parts:
             client.sendall(part)
@@ -153,7 +154,7 @@ class FirstResponseTests(unittest.TestCase):
                 client.settimeout(0.1)
                 with self.assertRaises(socket.timeout):
                     client.recv(1)
-                client.sendall(b"host\r\n\r")
+                client.sendall(b"host\r\nConnection: close\r\n\r")
                 client.sendall(b"\n")
                 client.settimeout(3)
                 self.assert_html(read_response(client), port)
@@ -271,7 +272,7 @@ class ConcurrencyTests(unittest.TestCase):
                     # A slow sender holds a worker; a serial server would need 50 * 0.2 s.
                     conn.sendall(b"GET / HTTP/1.1\r\nHost: local")
                     time.sleep(0.2)
-                    conn.sendall(b"host\r\n\r\n")
+                    conn.sendall(b"host\r\nConnection: close\r\n\r\n")
                     results[index] = read_response(conn)[0]
             except Exception as error:  # reported by the assertion below
                 results[index] = repr(error)
@@ -437,7 +438,7 @@ class HttpParsingTests(unittest.TestCase):
         with running_server(self.root) as port:
             get = request(port)
             with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
-                client.sendall(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+                client.sendall(b"HEAD / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
                 status, headers, body = read_response(client)
             self.assertEqual(status, "HTTP/1.1 200 OK")
             self.assertEqual(headers["Content-Length"], get[1]["Content-Length"])
@@ -725,6 +726,85 @@ class ProxyTests(unittest.TestCase):
             status, _, body = request(proxy)
             self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
 
+    def get(self, proxy, path=b"/api/x", version=b"1.1"):
+        return request(proxy, (b"GET " + path + b" HTTP/" + version +
+                               b"\r\nHost: h\r\nConnection: close\r\n\r\n",))
+
+    def test_silent_backend_is_504_after_three_seconds_and_next_request_works(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        with self.proxy_to(listener.getsockname()[1]) as proxy:
+            started = time.monotonic()
+            status, headers, body = self.get(proxy)
+            elapsed = time.monotonic() - started
+            self.assertEqual(status, "HTTP/1.1 504 Gateway Timeout")
+            self.assertEqual(int(headers["Content-Length"]), len(body))
+            self.assertTrue(2.8 <= elapsed < 4.5, elapsed)
+            status, _, body = request(proxy)
+            self.assertEqual((status, body), (OK_STATUS, b"<h1>front</h1>\n"))
+
+    def test_broken_or_cut_responses_are_502_and_never_retried(self):
+        replies = [b"garbage\r\n\r\n",
+                   b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc",
+                   b"HTTP/1.1 200 OK\r\nContent-Len",
+                   b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab",
+                   b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n",
+                   b""]
+        for reply in replies:
+            with self.subTest(reply=reply), fake_backend(reply) as (backend, received):
+                with self.proxy_to(backend) as proxy:
+                    status, headers, body = self.get(proxy)
+                    self.assertEqual(status, "HTTP/1.1 502 Bad Gateway")
+                    self.assertEqual(int(headers["Content-Length"]), len(body))
+                self.assertEqual(len(received), 1)
+
+    def test_response_over_8_mib_is_502_and_exactly_8_mib_passes(self):
+        limit = 8 * 1024 * 1024
+        head = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n"
+        size = limit - len(head % limit)
+        exact = head % size + b"x" * size
+        self.assertEqual(len(exact), limit)
+        with fake_backend(exact) as (backend, _), self.proxy_to(backend) as proxy:
+            status, _, body = self.get(proxy)
+            self.assertEqual((status, len(body)), (OK_STATUS, size))
+        with fake_backend(exact + b"x") as (backend, _), self.proxy_to(backend) as proxy:
+            status, _, _ = self.get(proxy)
+            self.assertEqual(status, "HTTP/1.1 502 Bad Gateway")
+
+    def test_chunked_reply_reaches_an_http10_client_with_content_length(self):
+        reply = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-T\r\n\r\n"
+                 b"3\r\nabc\r\n4;e=1\r\ndefg\r\n0\r\nX-T: v\r\n\r\n")
+        with fake_backend(reply) as (backend, _), self.proxy_to(backend) as proxy:
+            status, headers, body = self.get(proxy, version=b"1.0")
+            self.assertEqual((status, body), (OK_STATUS, b"abcdefg"))
+            self.assertEqual(headers["Content-Length"], "7")
+            self.assertNotIn("Transfer-Encoding", headers)
+            self.assertNotIn("X-T", headers)
+
+    def test_set_cookie_stays_separate(self):
+        reply = (b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n"
+                 b"Content-Length: 2\r\n\r\nok")
+        with fake_backend(reply) as (backend, _), self.proxy_to(backend) as proxy:
+            with socket.create_connection(("127.0.0.1", proxy), timeout=5) as client:
+                client.sendall(b"GET /api/x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+                raw = bytearray()
+                while chunk := client.recv(65536):
+                    raw.extend(chunk)
+        head = bytes(raw).partition(b"\r\n\r\n")[0].split(b"\r\n")
+        self.assertEqual([l for l in head if l.lower().startswith(b"set-cookie")],
+                         [b"Set-Cookie: a=1", b"Set-Cookie: b=2"])
+
+    def test_bodyless_statuses_and_head(self):
+        for reply, method in ((b"HTTP/1.1 204 No Content\r\n\r\n", b"GET"),
+                              (b"HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\n", b"GET"),
+                              (b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", b"HEAD")):
+            with self.subTest(reply=reply), fake_backend(reply) as (backend, _):
+                with self.proxy_to(backend) as proxy:
+                    status, _, body = request(
+                        proxy, (method + b" /api/x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+                    self.assertEqual(body, b"")
+                    self.assertEqual(status.split(" ")[1], reply.split(b" ")[1].decode())
+
     def test_invalid_route_is_argument_error(self):
         for route in ("api/=127.0.0.1:8001", "/api/", "/api/=127.0.0.1", "/api/=127.0.0.1:",
                       "/api/=127.0.0.1:0", "/api/=127.0.0.1:65536", "/api/=:8001",
@@ -942,6 +1022,240 @@ class StaticFileTests(unittest.TestCase):
             self.assertEqual((status, body), (OK_STATUS, content))
             self.assertEqual(int(headers["Content-Length"]), len(content))
             self.assertEqual(headers["Content-Type"], "application/octet-stream")
+
+
+class BufferedConnection:
+    """Client that keeps bytes read past one response for the next, so pipelining is observable."""
+
+    def __init__(self, port, timeout=8):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        self.buffer = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.sock.close()
+
+    def send(self, data):
+        self.sock.sendall(data)
+
+    def fill(self):
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            raise EOFError
+        self.buffer += chunk
+
+    def response(self):
+        """(status line, headers, body, raw length) of the next Content-Length-framed response."""
+        while b"\r\n\r\n" not in self.buffer:
+            self.fill()
+        head, _, rest = self.buffer.partition(b"\r\n\r\n")
+        lines = head.decode("ascii").split("\r\n")
+        headers = dict(line.split(": ", 1) for line in lines[1:])
+        length = int(headers["Content-Length"])
+        while len(rest) < length:
+            self.fill()
+            rest = self.buffer.partition(b"\r\n\r\n")[2]
+        raw = len(head) + 4 + length
+        body = rest[:length]
+        self.buffer = self.buffer[raw:]
+        return lines[0], headers, body, raw
+
+    def is_closed(self, seconds):
+        """True when the server closed with nothing more to say within `seconds`."""
+        self.sock.settimeout(seconds)
+        try:
+            return self.sock.recv(1) == b""
+        except socket.timeout:
+            return False
+
+
+class KeepAliveTests(unittest.TestCase):
+    """Connection reuse, pipelining, time limits and the access log (docs/spec.md "keep-alive와
+    시간 한도")."""
+
+    GET = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-keepalive-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"<h1>home</h1>\n")
+
+    def test_http11_keeps_the_connection_until_close_is_requested(self):
+        with running_server(self.root) as port, BufferedConnection(port) as client:
+            for _ in range(3):
+                client.send(self.GET)
+                status, headers, body, _ = client.response()
+                self.assertEqual((status, body), (OK_STATUS, b"<h1>home</h1>\n"))
+                self.assertEqual(headers["Connection"], "keep-alive")
+            client.send(b"GET /api/whoami HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+            status, headers, _, _ = client.response()
+            self.assertEqual((status, headers["Connection"]), (OK_STATUS, "close"))
+            self.assertTrue(client.is_closed(2))
+
+    def test_http10_closes_by_default_and_keeps_with_keep_alive(self):
+        with running_server(self.root) as port:
+            status, headers, _ = request(port, (b"GET / HTTP/1.0\r\n\r\n",))
+            self.assertEqual((status, headers["Connection"]), (OK_STATUS, "close"))
+            with BufferedConnection(port) as client:
+                for _ in range(2):
+                    client.send(b"GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")
+                    status, headers, body, _ = client.response()
+                    self.assertEqual((status, body), (OK_STATUS, b"<h1>home</h1>\n"))
+                    self.assertEqual(headers["Connection"], "keep-alive")
+
+    def test_pipelined_requests_are_answered_in_order(self):
+        post = b"POST /api/echo HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello"
+        whoami = b"GET /api/whoami HTTP/1.1\r\nHost: h\r\n\r\n"
+        with running_server(self.root, extra_args=("--name", "pipe")) as port:
+            with BufferedConnection(port) as client:
+                client.send(whoami + post + self.GET)  # one packet: the next bytes are buffered
+                self.assertEqual(json.loads(client.response()[2])["name"], "pipe")
+                self.assertEqual(client.response()[2], b"hello")
+                self.assertEqual(client.response()[2], b"<h1>home</h1>\n")
+            with BufferedConnection(port) as client:
+                client.send(post + self.GET[:10])  # a request cut in the middle, finished later
+                self.assertEqual(client.response()[2], b"hello")
+                time.sleep(0.1)
+                client.send(self.GET[10:])
+                self.assertEqual(client.response()[2], b"<h1>home</h1>\n")
+
+    def test_bytes_after_a_closing_request_are_not_answered(self):
+        closing = b"GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"
+        with running_server(self.root) as port:
+            status, headers, body = request(port, (closing + self.GET,))
+            self.assertEqual((status, body), (OK_STATUS, b"<h1>home</h1>\n"))
+            self.assertEqual(headers["Connection"], "close")
+
+    def test_hundredth_response_closes_the_connection(self):
+        with running_server(self.root) as port, BufferedConnection(port) as client:
+            for number in range(1, 101):
+                client.send(self.GET)
+                status, headers, _, _ = client.response()
+                self.assertEqual(status, OK_STATUS)
+                expected = "close" if number == 100 else "keep-alive"
+                self.assertEqual(headers["Connection"], expected, f"response {number}")
+            self.assertTrue(client.is_closed(2))
+
+    def test_hundred_pipelined_requests_all_arrive_before_the_close(self):
+        with running_server(self.root) as port, BufferedConnection(port) as client:
+            client.send(self.GET * 101)
+            for number in range(1, 101):
+                status, headers, _, _ = client.response()
+                self.assertEqual(status, OK_STATUS)
+                self.assertEqual(headers["Connection"], "close" if number == 100 else "keep-alive")
+            self.assertTrue(client.is_closed(2))  # the 101st request is never answered
+
+    def test_slow_head_hits_the_absolute_deadline(self):
+        with running_server(self.root) as port:
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
+                start = time.monotonic()
+                client.sendall(b"GET / HTTP/1.1\r\nHost: h\r\nX-Slow: ")
+                while time.monotonic() - start < 9:
+                    ready, _, _ = select.select([client], [], [], 0.5)
+                    if ready:
+                        break
+                    client.sendall(b"a")  # one byte at a time; each byte must not extend the limit
+                status, headers, _ = read_response(client)
+                elapsed = time.monotonic() - start
+            self.assertEqual(status, "HTTP/1.1 408 Request Timeout")
+            self.assertEqual(headers["Connection"], "close")
+            self.assertGreaterEqual(elapsed, 4.5)
+            self.assertLess(elapsed, 6.5)
+            self.assertEqual(request(port)[0], OK_STATUS)
+
+    def test_silent_connections_close_after_the_idle_limit(self):
+        with running_server(self.root) as port:
+            with BufferedConnection(port, timeout=10) as client:
+                start = time.monotonic()
+                self.assertTrue(client.is_closed(8))  # nothing sent: closed without a 408
+                self.assertGreaterEqual(time.monotonic() - start, 4.5)
+                self.assertLess(time.monotonic() - start, 6.5)
+            with BufferedConnection(port, timeout=10) as client:
+                client.send(self.GET)
+                self.assertEqual(client.response()[0], OK_STATUS)
+                start = time.monotonic()
+                self.assertTrue(client.is_closed(8))  # idle after a response: also silent
+                self.assertGreaterEqual(time.monotonic() - start, 4.5)
+                self.assertLess(time.monotonic() - start, 6.5)
+
+    def test_idle_static_keep_alive_connection_is_closed_at_shutdown(self):
+        with server_process(self.root) as (process, port):
+            with BufferedConnection(port) as client:
+                client.send(self.GET)
+                self.assertEqual(client.response()[0], OK_STATUS)
+                process.send_signal(signal.SIGTERM)
+                self.assertTrue(client.is_closed(3))  # far below the 5 s idle limit
+            self.assertEqual(wait_exit(process), 0)
+
+    @contextmanager
+    def logged_server(self, extra_args=()):
+        """Starts a server and yields (port, read_lines); read_lines stops it and returns the
+        access-log lines (without the startup line)."""
+        with tempfile.TemporaryFile(mode="w+b") as log:
+            port = free_port()
+            process = subprocess.Popen(
+                [str(BINARY), "--host", "127.0.0.1", "--port", str(port), "--root",
+                 str(self.root), *extra_args], stdout=subprocess.DEVNULL, stderr=log)
+
+            def read_lines():
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                log.seek(0)
+                return log.read().decode().splitlines()[1:]
+
+            try:
+                deadline = time.monotonic() + 10
+                while b"Listening on" not in os.pread(log.fileno(), 4096, 0):
+                    self.assertIsNone(process.poll(), "Server exited during startup")
+                    self.assertLess(time.monotonic(), deadline, "Server never became ready")
+                    time.sleep(0.02)
+                yield port, read_lines
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+
+    LOG_LINE = (r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ 127\.0\.0\.1 (\S+) (\S+) (\d{3}) (\d+) "
+                r"(\d+)ms")
+
+    def test_every_request_gets_one_access_log_line(self):
+        with self.logged_server() as (port, read_lines):
+            with BufferedConnection(port) as client:
+                client.send(self.GET)
+                raw_ok = client.response()[3]
+                client.send(b"GET /missing?x=1 HTTP/1.1\r\nHost: h\r\n\r\n")
+                raw_missing = client.response()[3]
+            with BufferedConnection(port) as client:
+                client.send(b"BAD\r\n\r\n")
+                raw_bad = client.response()[3]
+            lines = read_lines()
+        parsed = [re.fullmatch(self.LOG_LINE, line) for line in lines]
+        self.assertEqual(len(lines), 3, lines)
+        self.assertTrue(all(parsed), lines)
+        self.assertEqual([m.group(1, 2, 3) for m in parsed],
+                         [("GET", "/", "200"), ("GET", "/missing", "404"), ("-", "-", "400")])
+        self.assertEqual([int(m.group(4)) for m in parsed], [raw_ok, raw_missing, raw_bad])
+
+    def test_proxied_request_logs_only_bytes_sent_to_the_client(self):
+        payload = b"x" * 3000  # a large request body makes the backend write easy to tell apart
+        post = b"POST /api/echo HTTP/1.1\r\nHost: h\r\nContent-Length: %d\r\n\r\n" % len(payload)
+        with running_server(self.root) as backend:
+            route = ("--route", f"/api/=127.0.0.1:{backend}")
+            with self.logged_server(route) as (proxy, read_lines):
+                with BufferedConnection(proxy) as client:
+                    client.send(post + payload)
+                    status, _, body, raw = client.response()
+                lines = read_lines()
+        self.assertEqual((status, body), (OK_STATUS, payload))
+        self.assertEqual(len(lines), 1, lines)
+        match = re.fullmatch(self.LOG_LINE, lines[0])
+        self.assertTrue(match, lines)
+        self.assertEqual(match.group(1, 2, 3), ("POST", "/api/echo", "200"))
+        self.assertEqual(int(match.group(4)), raw)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 #include "mini_webserver.h"
 #include "test.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -312,6 +313,65 @@ bool test_http_upstream_response(void) {
     return true;
 }
 
+bool test_http_upstream_chunked(void) {
+    mw_upstream_response_t response;
+    /* Several chunks, hex in either case, a chunk extension, and a trailer that is dropped. */
+    CHECK(parse_upstream("HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\nSet-Cookie: a\r\n"
+                         "Set-Cookie: b\r\n\r\n3\r\nabc\r\nA;ext=1\r\n0123456789\r\n"
+                         "0\r\nX-Trailer: t\r\n\r\n",
+                         false, &response) == 0);
+    CHECK(response.body.length == 13 && memcmp(response.body.data, "abc0123456789", 13) == 0);
+    CHECK(response.headers.count == 3); /* the trailer is not a header */
+    CHECK(slice_is(response.headers.items[1].value, "a") &&
+          slice_is(response.headers.items[2].value, "b"));
+    mw_http_upstream_destroy(&response);
+
+    CHECK(parse_upstream("HTTP/1.1 200 OK\nTransfer-Encoding: chunked\n\n2\nhi\n0\n\n", false,
+                         &response) == 0);
+    CHECK(response.body.length == 2 && memcmp(response.body.data, "hi", 2) == 0);
+    mw_http_upstream_destroy(&response);
+    CHECK(parse_upstream("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", false,
+                         &response) == 0);
+    CHECK(response.body.length == 0 && response.body.data == NULL);
+    mw_http_upstream_destroy(&response);
+
+    /* HEAD, 204 and 304 never have a body, whatever the framing headers say. */
+    const char *bodyless[] = {"HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\nzz",
+                              "HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\nabcde"};
+    for (size_t i = 0; i < 2; i++) {
+        CHECK(parse_upstream(bodyless[i], false, &response) == 0 && response.body.length == 0);
+        mw_http_upstream_destroy(&response);
+    }
+    CHECK(parse_upstream("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz", true,
+                         &response) == 0);
+    CHECK(response.body.length == 0);
+    mw_http_upstream_destroy(&response);
+
+    const char *head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    /* No chunk, no last chunk, unfinished trailer, bad or empty size, short or long data, huge. */
+    const char *broken[] = {"",
+                            "3\r\nabc\r\n",
+                            "3\r\nabc\r\n0\r\n",
+                            "3\r\nabc\r\n0\r\nX: 1\r\n",
+                            "zz\r\nabc\r\n0\r\n\r\n",
+                            "\r\nabc\r\n0\r\n\r\n",
+                            "5\r\nabc\r\n0\r\n\r\n",
+                            "3\r\nabcde\r\n0\r\n\r\n",
+                            "FFFFFFFFFF\r\nabc\r\n0\r\n\r\n"};
+    for (size_t i = 0; i < sizeof(broken) / sizeof(broken[0]); i++) {
+        char text[128];
+        (void)snprintf(text, sizeof(text), "%s%s", head, broken[i]);
+        CHECK(parse_upstream(text, false, &response) == 502);
+        CHECK(response.body.data == NULL);
+        mw_http_upstream_destroy(&response);
+    }
+    /* A coding other than a lone "chunked" cannot be forwarded as plain bytes. */
+    CHECK(parse_upstream("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+                         false, &response) == 502);
+    mw_http_upstream_destroy(&response);
+    return true;
+}
+
 bool test_http_hop_by_hop(void) {
     mw_request_t request;
     CHECK(parse("GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive, X-Hop\r\n\r\n", &request)
@@ -327,5 +387,24 @@ bool test_http_hop_by_hop(void) {
         mw_slice_t name = {(const unsigned char *)end_to_end[i], strlen(end_to_end[i])};
         CHECK(!mw_http_is_hop_by_hop(&request.headers, name));
     }
+    return true;
+}
+
+bool test_http_last_response(void) {
+    int pair[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    mw_deadline_t deadline = mw_net_now_ms() + 1000;
+    mw_response_t response = {.status = 204};
+    int status = 0;
+    bool keep_alive = false;
+    CHECK(mw_http_send_response(pair[0], &response, false, true, deadline) == 0);
+    mw_http_last_response(&status, &keep_alive);
+    CHECK(status == 204 && keep_alive);
+    /* Error pages always close, and the record follows the latest response. */
+    CHECK(mw_http_send_error(pair[0], 404, false, deadline) == 0);
+    mw_http_last_response(&status, &keep_alive);
+    CHECK(status == 404 && !keep_alive);
+    (void)close(pair[0]);
+    (void)close(pair[1]);
     return true;
 }
