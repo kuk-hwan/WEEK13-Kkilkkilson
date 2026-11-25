@@ -1,0 +1,46 @@
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0 auto;
+  max-width: 44rem;
+  padding: 1.5rem;
+  line-height: 1.5;
+}
+
+header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+section {
+  border: 1px solid #ccd;
+  border-radius: 8px;
+  margin: 1rem 0;
+  padding: 0 1rem 1rem;
+}
+
+button {
+  font-size: 1rem;
+  padding: 0.4rem 0.8rem;
+}
+
+input {
+  font-size: 1rem;
+  padding: 0.4rem;
+  width: 60%;
+}
+
+#status.ok {
+  color: #0a6;
+}
+
+#status.error {
+  color: #c33;
+}
+
+pre {
+  background: #f4f4f8;
+  min-height: 2rem;
+  padding: 0.5rem;
+  white-space: pre-wrap;
+}
