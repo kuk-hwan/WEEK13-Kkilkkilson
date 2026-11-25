@@ -40,12 +40,13 @@ def running_server(root, port=None, extra_args=()):
 
 @contextmanager
 def server_process(root, port=None, extra_args=(), *, binary=None, wrapper=(),
-                   stop_signal=signal.SIGTERM):
+                   stop_signal=signal.SIGTERM, log_path=None):
     """Starts the server and yields (process, port). Cleanup terminates it if still running and
     fails on sanitizer reports. Tests that stop the server themselves use this directly."""
     port = free_port() if port is None else port
     binary = BINARY if binary is None else binary
-    with tempfile.TemporaryFile(mode="w+b") as log:
+    log_file = tempfile.TemporaryFile(mode="w+b") if log_path is None else log_path.open("w+b")
+    with log_file as log:
         process = subprocess.Popen(
             [*wrapper, str(binary), "--host", "127.0.0.1", "--port", str(port), "--root", str(root),
              *extra_args],

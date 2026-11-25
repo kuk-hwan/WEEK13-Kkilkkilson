@@ -17,10 +17,12 @@ def checked_server(binary, root, report, extra_args=()):
     command = (
         "valgrind", "--leak-check=full", "--show-leak-kinds=all",
         "--errors-for-leak-kinds=all", "--track-fds=yes", "--error-exitcode=66",
-        f"--log-file={report}",
+        # Reuse stderr so Valgrind 3.22 does not count its own log FD as open.
+        "--log-fd=2",
     )
     with server_process(root, extra_args=extra_args, binary=binary,
-                        wrapper=command, stop_signal=signal.SIGINT) as (process, port):
+                        wrapper=command, stop_signal=signal.SIGINT,
+                        log_path=report) as (process, port):
         yield port
     log = report.read_text(encoding="utf-8", errors="replace")
     descriptors = re.search(r"FILE DESCRIPTORS: (\d+) open \((\d+) (?:std|inherited)\) at exit\.", log)

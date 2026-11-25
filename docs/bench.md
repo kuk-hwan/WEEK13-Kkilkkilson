@@ -7,7 +7,7 @@ make sanitize-test
 make bench
 ```
 
-- `make valgrind`는 Linux에서 프록시와 백엔드 둘 다 Valgrind로 실행한다. 실제 TCP 연결로 정적 GET, 프록시 GET과 POST를 확인하고, 두 서버를 SIGINT로 순서대로 종료한다. 프로세스 종료 코드, 남은 힙, 메모리 오류, 상속된 표준 입출력 외에 남은 FD를 검사한다. 원본 로그는 `build/valgrind/{proxy,backend}.log`에 저장된다.
+- `make valgrind`는 Linux에서 프록시와 백엔드 둘 다 Valgrind로 실행한다. 실제 TCP 연결로 정적 GET, 프록시 GET과 POST를 확인하고, 두 서버를 SIGINT로 순서대로 종료한다. 프로세스 종료 코드, 남은 힙, 메모리 오류, 상속된 표준 입출력 외에 남은 FD를 검사한다. 서버와 Valgrind의 표준 오류는 `build/valgrind/{proxy,backend}.log`에 저장된다. Valgrind 3.22에서도 검사 도구의 로그가 열린 FD 수에 추가되지 않도록 표준 오류를 함께 사용한다.
 - `make sanitize-test`는 ASan·UBSan 설정으로 단위 테스트와 전체 HTTP 통합 테스트를 실행한다.
 - `make bench`는 `127.0.0.1`에 임시 프록시와 백엔드를 실행한다. 1 KiB 응답을 프록시에서 직접 서빙하거나 백엔드에서 읽어 중계한다. 요청 수는 케이스마다 1,000개로 고정한다. 프록시 작업자 8·64개, 정적·프록시 경로, 동시 접속 1·10·50·100개, 클라이언트 keep-alive 끔·켬을 조합해 32개 케이스를 실행한다. 백엔드 작업자 8개와 연결 큐 256개는 동일하다.
 - 기본 출력인 `build/bench.csv`에는 환경과 완료 요청 수, keep-alive 응답 수, 처리량(req/s), 평균·p95 요청 지연(ms), failed, non-2xx가 담긴다. 재현할 때 `BENCH_REQUESTS`와 `BENCH_REPORT`로 요청 수와 파일 경로를 지정할 수 있다.
