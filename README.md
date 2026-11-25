@@ -1,171 +1,439 @@
 # Week 13 · Mini Webserver
 
-C11/POSIX 웹 서버 팀 과제다. 명세는 [`docs/spec.md`](docs/spec.md), 모듈 계약은
-[`include/mini_webserver.h`](include/mini_webserver.h)와 [`docs/CONTRACT.md`](docs/CONTRACT.md)에 있다.
+> [!NOTE]
+> 외부 라이브러리 없이 **POSIX 소켓만으로** 만든 C11 웹 서버.
+> 실행 파일 하나가 **정적 파일 · API · Reverse Proxy · Forward Proxy** 가 된다.
 
-현재는 **이슈 #6의 정적 파일 서빙 단계**다. HTTP 파서와 스레드 풀을 사용하며,
-루트 아래 파일·디렉터리 index를 GET/HEAD로 응답한다. 쿼리와 인코딩 경로를 지원하고,
-심볼릭 링크·경로 탈출·비정규 파일은 거부한다. 정적 파일의 POST는 405다.
-동적 엔드포인트와 단일 백엔드 Reverse Proxy도 동작한다. 정적·동적 응답 뒤에는 연결을
-닫고, 현재 연결 유지는 프록시 요청에서만 지원한다. 안전한 종료(#8)와 나머지 요청의
-keep-alive(#9)는 후속 단계다. 참고 구현의 소스는 복사하지 않았다.
+| 기능 | 한 줄 |
+|---|---|
+| 정적 파일 | GET · HEAD, `index.html`, MIME, 경로 탈출 거부 |
+| 동적 API | `/api/whoami` · `/api/echo` |
+| Reverse Proxy | 경로 라우트 + 라운드 로빈 |
+| Forward Proxy | absolute-form 전달 + CONNECT 터널 |
+| 연결 | HTTP/1.0 · 1.1, keep-alive, 파이프라이닝 |
+| 운영 | 스레드 풀, 안전 종료, 접근 로그 |
 
-CI의 포맷 기준은 clang-format 18이다. 다른 버전을 쓴다면
-`make CLANG_FORMAT=clang-format-18 format-check`로 같은 검사기를 선택할 수 있다.
+**목차**
+[1. 빠른 시작](#1-빠른-시작) ·
+[2. 요청 흐름](#2-요청-흐름) ·
+[3. 중점 포인트](#3-중점-포인트) ·
+[4. 범위와 한도](#4-범위와-한도) ·
+[5. 테스트](#5-테스트) ·
+[6. 측정 결과](#6-측정-결과) ·
+[7. 문서](#7-문서)
 
-## 준비와 검사
+---
 
-Windows는 WSL2 Ubuntu에서 실행한다. Linux는 C 컴파일러·make·Python 3·clang-format을 준비한다.
-macOS는 Xcode Command Line Tools, Python 3, clang-format을 준비한다.
+## 1. 빠른 시작
+
+### ① 준비 · 빌드 · 테스트
+
+Windows 는 PowerShell(관리자)에서 `wsl --install -d Ubuntu-24.04` 한 번. 그다음 Ubuntu 에서:
 
 ```sh
-# Ubuntu / WSL2
-sudo apt-get update
-sudo apt-get install -y build-essential python3 clang-format-18
-
-git clone https://github.com/kuk-hwan/WEEK13-Kkilkkilson.git
-cd WEEK13-Kkilkkilson
+sudo apt-get update && sudo apt-get install -y build-essential python3 curl clang-format-18
+git clone https://github.com/kuk-hwan/WEEK13-Kkilkkilson.git && cd WEEK13-Kkilkkilson
 git config core.hooksPath .githooks
-
-make
-make test
-make sanitize-test
-make CLANG_FORMAT=clang-format-18 format-check
+make && make test
 ```
 
-## 서버 실행
+### ② 실행 — 서버 하나, 또는 프록시 + 백엔드 A · B
 
 ```sh
-./build/mini-webserver --host 127.0.0.1 --port 8080 --root public
+# 서버 하나
+./build/mini-webserver --port 8080
+
+# 프록시 + A · B (터미널 3개)
+./build/mini-webserver --port 9001 --name A
+./build/mini-webserver --port 9002 --name B
+./build/mini-webserver --port 9000 --route '/api=127.0.0.1:9001,127.0.0.1:9002'
+
+curl http://127.0.0.1:9000/api/whoami   # A, 한 번 더 하면 B
 ```
 
-다른 터미널에서 응답을 확인하거나 브라우저에서 `http://127.0.0.1:8080/`을 연다.
+- 브라우저 `http://127.0.0.1:9000/` → 데모 페이지. 끄기는 Ctrl-C (종료 코드 0)
+- 이 구성 전체를 curl 로 한 번에 : `make smoke`
+
+<details>
+<summary><b>curl 예시 · 접근 로그 · macOS · 선택 도구</b> (펼치기)</summary>
 
 ```sh
-curl -i http://127.0.0.1:8080/
-curl -I http://127.0.0.1:8080/index.html
-curl -i 'http://127.0.0.1:8080/index.html?v=2'
-curl -i --data '' http://127.0.0.1:8080/index.html # 405 + Allow: GET, HEAD
+curl -i http://127.0.0.1:8080/                          # 200 데모 페이지
+curl -i http://127.0.0.1:8080/api/whoami                # {"name":"server-8080","port":8080}
+curl -i --data 'hello' http://127.0.0.1:8080/api/echo   # 본문 그대로
+curl -i http://127.0.0.1:8080/missing.html              # 404
 ```
 
-200 상태와 `Content-Type: text/html; charset=utf-8`, 파일 바이트 수와 같은
-`Content-Length`, `Connection: close`, `Date`, `Server` 헤더 및 HTML 본문을 받는다.
-루트 아래에 `docs/index.html`을 두면 `/docs`와 `/docs/`로 받을 수 있다.
-파일 확장자에 맞는 MIME을 보내며, index 없는 디렉터리는 403, 없는 파일은 404다.
+요청마다 표준 오류에 한 줄 : 시각 · 클라이언트 · 메서드 · 경로 · 상태 · 보낸 바이트 · 처리 시간
 
-기본값은 호스트 `127.0.0.1`, 포트 `8080`, 루트 `public`이다. 포트는 1~65535,
-호스트는 IPv4 주소, 루트는 존재하는 디렉터리여야 한다. 잘못된 인자는 종료 코드 2,
-포트 충돌 등의 실행 오류는 1이다. 이번 단계는 Ctrl-C로 종료하며 정상 종료 절차는 #8에서 구현한다.
+```text
+2026-11-25T02:13:09Z 127.0.0.1 GET /api/whoami 200 163 0ms
+```
 
-## 포워드 프록시
+- macOS : Xcode Command Line Tools, Python 3, clang-format
+- 선택 : `apache2-utils`(부하 측정), `valgrind`(메모리 검사)
 
-`--forward-allow IPv4/길이`를 하나라도 주면 켜진다(16개까지). 목록 밖 클라이언트의 포워드
-요청은 403이고, 안 주면 absolute-form 요청은 지금처럼 400이다. 목적지는 막지 않는다.
+</details>
+
+<details>
+<summary><b>포워드 프록시로 쓰기</b> (펼치기)</summary>
 
 ```sh
 ./build/mini-webserver --port 8080 --forward-allow 127.0.0.1/32
-./build/mini-webserver --port 9001 --name A    # 목적지로 쓸 서버
-curl -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # {"name":"A","port":9001}
-curl -x http://127.0.0.1:8080 http://example.com/
-curl -x http://127.0.0.1:8080 https://example.com/    # CONNECT 터널
-curl -p -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # TLS 없이 CONNECT 확인
+curl -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami      # 전달
+curl -x http://127.0.0.1:8080 https://example.com/                   # CONNECT 터널
+curl -p -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # TLS 없이 CONNECT
 ```
 
-- `https://`는 `CONNECT host:port` 터널로 간다. 목적지에 연결되면 `200 Connection Established`를
-  보내고, 그 뒤로는 바이트를 해석 없이 양쪽으로 넘긴다(TLS 안은 보지 않는다). 양쪽 다 5초 조용하거나,
-  한쪽이 끊거나, 서버가 종료 중이면 닫는다. 실패는 403·502·504이고, CONNECT는 성공이든 실패든 끝나면
-  연결을 닫는다. 안 켜면 CONNECT는 501이다.
-- **터널 하나가 작업자 하나를 끝날 때까지 쓴다.** 브라우저는 터널을 여러 개 열어 두니, 브라우저의
-  프록시로 쓸 때는 `--workers`를 늘려라(예: `--workers 64`). 작업자가 모자라면 새 연결이 503을 받는다.
-- 목적지에는 origin-form 요청 줄(`GET /경로?쿼리 HTTP/1.1`)과 URI의 `host:port`를 담은
-  `Host`가 간다. `Proxy-Connection`, `Proxy-Authorization`은 빼고 `X-Forwarded-For`는
-  실제 연결 주소로 덮어쓴다.
-- 포워드 요청은 `--route`를 타지 않는다. 둘을 같이 켜도 origin-form만 라우트로 간다.
-- 응답과 실패는 리버스 프록시와 같다: 8 MiB, 3초, 연결 실패·이름 못 찾음은 502, 시간 초과는
-  504, 재시도 없음. 403·502·504 뒤에도 연결은 유지된다.
-- 목적지 이름은 요청마다 `getaddrinfo`(IPv4, 첫 주소)로 찾는다. 블로킹이라 **DNS 시간은
-  3초 deadline 밖**이고, 느린 DNS는 그동안 작업자 하나를 붙잡는다.
+- `--forward-allow` 가 하나라도 있어야 켜진다. 목록 밖은 **403**
+- `https://` 는 CONNECT 터널. 바이트를 해석하지 않고 양쪽으로 넘긴다
+- 터널 하나 = 작업자 하나. 브라우저 프록시로 쓰면 `--workers 64` 처럼 늘린다
+- 목적지 DNS(`getaddrinfo`)는 블로킹. 3초 deadline 밖이다
 
-## 요청이 흐르는 코드
+</details>
 
-```text
-main (src/main.c)
-  → mw_config_parse (src/config.c): 옵션 검증, 절대 루트 경로와 디렉터리 FD 확보
-  → mw_server_run (src/server.c)
-      → mw_net_listen (src/net.c): socket → SO_REUSEADDR → bind → listen
-      → accept → mw_pool_submit (src/pool.c): 연결 큐와 작업자 스레드
-      → mw_app_handle_connection → mw_http_read_request (src/http.c): 머리·본문 수신과 검증
-      → absolute-form(포워드 프록시 켬): mw_proxy_forward (src/proxy.c)
-      → CONNECT(포워드 프록시 켬): mw_proxy_tunnel (src/proxy.c), 끝나면 연결을 닫음
-      → 라우트 일치: mw_proxy_serve (src/proxy.c)
-      → 로컬 동적 경로: serve_dynamic (src/server.c)
-      → 그 밖: mw_static_serve (src/static.c)
-          → mw_static_decode_path: 쿼리 제거, 퍼센트 디코딩, 경로 요소 검사
-          → open_file: 루트 FD부터 요소별 openat + O_NOFOLLOW, 디렉터리 index 확인
-          → mw_http_send_response: 파일 크기와 MIME을 헤더로 전송
-          → read → mw_net_write_all: 파일을 8 KiB씩 전송(HEAD는 본문 생략)
-      → 작업자가 연결을 닫음(프록시의 keep-alive는 다음 요청을 처리)
-```
+<details>
+<summary><b>옵션과 종료 코드</b> (펼치기)</summary>
 
-설정·리스너 준비는 서버 시작 때 한 번만 한다. 작업자가 연결별 요청 버퍼를 가지고
-요청을 읽는다. 첫 바이트부터 5초의 요청 deadline을 적용하며, 추가 바이트가 도착해도
-연장하지 않는다. 파일 전송도 `mw_net_write_all`의 부분 송신 처리와 제한 시간을 사용한다.
-
-정적 파일 경로는 각 요소를 검사하고 루트 FD에 상대적으로 연다. `fstatat`으로 심볼릭
-링크·비정규 파일을 거부한 뒤에도 `O_NOFOLLOW`와 열린 FD의 `fstat` 검사를 유지한다.
-파일 전체를 메모리에 올리지 않으며, HEAD도 GET과 같은 Content-Length를 보낸다.
-
-| FD | 용도 | 수명 |
+| 인자 | 기본값 | 범위 |
 |---|---|---|
-| `config->root_fd` | 루트 디렉터리를 기준으로 파일 열기 | 설정이 살아 있는 동안 유지 |
-| `listener` | 새 연결을 받는 접수 소켓 | accept 루프 동안 유지 |
-| `client` | 요청·응답 송수신 | 작업자가 연결 처리를 마치면 닫음 |
-| 정적 파일 FD | 일반 파일 내용 읽기 | 헤더·본문 전송 뒤 닫음 |
-| 중간 디렉터리 FD | 다음 경로 요소 열기 | 다음 요소를 연 뒤 닫음 |
+| `--host` | `127.0.0.1` | IPv4 |
+| `--port` | `8080` | 1~65535 |
+| `--root` | `public` | 있는 디렉터리 |
+| `--workers` | `8` | 1~128 |
+| `--queue` | `64` | 1~4096 |
+| `--name` | `server-<포트>` | 63바이트 |
+| `--route` | 없음 | `'/접두사=호스트:포트[,...]'` 16개 × 백엔드 8개 |
+| `--forward-allow` | 없음 (꺼짐) | CIDR 16개 |
 
-## 테스트 범위
+| 종료 코드 | 뜻 |
+|---|---|
+| 0 | 정상 종료 |
+| 1 | 실행 오류 (포트 충돌 등) |
+| 2 | 인자 오류 |
 
-빌드 결과는 `build/mini-webserver`, C 테스트는 `build/test-unit`이다. C11과
-`-Wall -Wextra -Werror -pedantic`으로 컴파일 경고를 오류로 처리한다.
-`make sanitize-test`는 분리된 `build/sanitize/`에서 ASan·UBSan으로 같은 테스트를 실행한다.
-`make test`는 C 단위 테스트 25개와 Python 실제 TCP 통합 테스트 46개를 실행한다.
-통합 테스트는 임시 디렉터리·빈 포트·실제 서버 프로세스를 사용하며 끝나면 정리한다.
+</details>
 
-- 설정 기본값·유효/잘못된 옵션·설정 자원 해제
-- 작은 송신 버퍼에서도 전체 쓰기, 읽기·쓰기의 절대 deadline, EOF
-- UTF-8/빈 파일/4MiB 파일의 정확한 본문과 HTTP 헤더
-- 실제 실행 포트를 기준으로 `Server: server-<포트>` 전체 일치 검사. 두 서버를 다른 포트에
-  동시에 띄워 각각의 이름을 확인하고, 403·404·408·431 오류 응답도 같은 기준으로 검사
-- HTTP 파서의 정상·오류·한도, 나뉘어 온 요청 머리, LF/HTTP 1.0
-- 포트 충돌(1)·인자 오류(2), 같은 포트로 즉시 재시작
-- 클라이언트 강제 종료 후에도 다음 요청 처리, 머리 크기 제한과 복구
-- 요청 중간에 바이트가 더 와도 첫 바이트 기준 5초 deadline 유지
-- MIME 표 전체·대문자 확장자·기본값, 인코딩·한글 경로·쿼리, 잘못된 경로의 400/403
-- 디렉터리 index, 읽기 권한 거부·심볼릭 링크·FIFO·Unix 소켓의 403, 없는 파일의 404
-- 정적 HEAD·POST 405/Allow, 하위 경로의 5 MiB 이상 이진 파일 바이트 일치
-- 동적 whoami·이진 echo, 단일 백엔드 전달·헤더 재작성·프록시 연결 유지, 스레드 풀·큐 초과
+---
 
-`make sanitize-test`에서도 **단위 테스트와 서버 실행 파일 모두** 계측해 같은 통합 테스트를
-실행한다. 테스트 종료는 SIGTERM으로 하며, 정상 종료 시 누수·남은 FD 검증은 #8/#14에서
-추가한다. 현재 검사로 완성된 종료 모델이나 전체 HTTP 기능을 검증했다고 주장하지 않는다.
+## 2. 요청 흐름
+
+> [!NOTE]
+> 연결은 **큐**를 거쳐 **작업자 하나**가 끝까지 맡는다.
+
+```mermaid
+flowchart TD
+    C[클라이언트] -->|handshake는 커널이| L[리스너]
+    L -->|poll → accept| M[메인 스레드]
+    M -->|연결 FD| Q[(연결 큐)]
+    M -.->|큐가 가득| R503[503 후 닫기]
+    Q --> W[작업자]
+    W --> P[요청 읽기 · 파싱]
+    P -->|CONNECT| T[터널]
+    P -->|absolute-form| F[포워드]
+    P -->|라우트 일치| RP[백엔드 · 라운드 로빈]
+    P -->|/api| D[동적]
+    P -->|그 밖| S[정적 파일]
+    F --> RES[응답 + 로그]
+    RP --> RES
+    D --> RES
+    S --> RES
+    RES -->|keep-alive| P
+    RES -->|아니면| X[닫기 → 큐로]
+```
+
+| 모듈 | 파일 | 하는 일 |
+|---|---|---|
+| main | `src/main.c` | 인자 → 실행 → 종료 코드 |
+| config | `src/config.c` | 옵션 검증, 루트 FD, 라우트 |
+| net | `src/net.c` | listen · connect, deadline 읽기 · 쓰기 |
+| pool | `src/pool.c` | 작업자 N개 + 크기 제한 큐 |
+| http | `src/http.c` | 요청 파싱 · 한도, 응답 헤더 |
+| app | `src/server.c` | accept 루프, keep-alive, 분기, 로그, 종료 |
+| static | `src/static.c` | 경로 검사, 8 KiB씩 전송 |
+| proxy | `src/proxy.c` | 라우트, 라운드 로빈, 포워드, 터널 |
+
+<details>
+<summary><b>FD 수명</b> (펼치기)</summary>
+
+| FD | 용도 | 언제 닫나 |
+|---|---|---|
+| 루트 디렉터리 | 파일 열기 기준 | 서버 끝날 때 |
+| 리스너 | 새 연결 받기 | accept 루프 끝 |
+| self-pipe | 시그널로 루프 깨우기 | 서버 끝날 때 |
+| 클라이언트 | 요청 · 응답 | 연결 처리가 끝나면 |
+| 백엔드 · 목적지 | 프록시 · 터널 | 요청(터널) 하나 끝나면 |
+| 정적 파일 | 파일 읽기 | 전송 뒤 |
+
+</details>
+
+---
+
+## 3. 중점 포인트
+
+> 항목마다 같은 순서 : **한 줄 답 → 어떻게 → 코드 → 확인**
+
+### 3-1. handshake · `SO_REUSEADDR` · blocking
+
+> [!NOTE]
+> handshake 는 **커널**이, non-blocking 은 **시간 제한**을 위해.
+
+- **handshake**
+	- SYN → SYN-ACK → ACK 는 커널이 끝낸다
+	- `accept` 는 완성된 연결을 대기열(`SOMAXCONN`)에서 꺼낼 뿐
+- **`SO_REUSEADDR`**
+	- 끈 직후 포트가 TIME_WAIT 로 남는다
+	- 이 옵션으로 바로 재시작 → `socket → SO_REUSEADDR → bind → listen`
+- **blocking / non-blocking**
+	- 리스너 : non-blocking + self-pipe 와 함께 `poll` (종료 신호에 바로 깸)
+	- 연결 소켓 : non-blocking + `poll` 로 **절대 deadline** 까지 기다림
+	- 작업자에게는 동기식 코드. 하지만 느린 상대 때문에 영원히 멈추지 않는다
+	- 백엔드 연결 : non-blocking `connect`(`EINPROGRESS`), 3초
+
+코드 `src/net.c`, `src/server.c` `accept_loop`
+확인 같은 포트 즉시 재시작 · 포트 충돌 종료 코드 1 · deadline 단위 테스트
+
+### 3-2. 요청 경계와 `Content-Length`
+
+> [!NOTE]
+> TCP 는 경계가 없다 → **빈 줄**과 **`Content-Length`** 로 자른다.
+
+- 요청이 쪼개져 오거나, 두 개가 붙어 올 수 있다
+- 머리 = 빈 줄(`\r\n\r\n`)까지
+- 본문 = `Content-Length` 바이트만큼
+- 남은 바이트 = 다음 요청 (파이프라이닝)
+
+| 경우 | 응답 |
+|---|---|
+| 숫자 아님 · 다른 값 중복 | 400 |
+| POST 에 없음 | 411 |
+| 1 MiB 초과 | 413 (본문 읽기 전) |
+| chunked 요청 본문 | 501 |
+
+- 파싱 오류 뒤에는 경계를 못 믿으니 **연결을 닫는다**
+
+코드 `src/http.c` `mw_http_read_request`
+확인 나뉘어 온 머리 · 한 바이트씩 · 파이프라이닝 · 400 · 411 · 413 · 501
+
+### 3-3. keep-alive
+
+> [!NOTE]
+> 연결을 다시 쓰되, **시간 · 횟수 상한**을 둔다.
+
+| 항목 | 값 | 넘으면 |
+|---|---|---|
+| 유지 조건 | 1.1 기본 · 1.0 은 요청할 때만 | `Connection: close` |
+| 유휴 | 5초 | 조용히 닫기 |
+| 요청 deadline | 첫 바이트부터 5초 (안 늘어남) | 408 후 닫기 |
+| 연결당 요청 | 100 | 100번째에 close |
+| 서버 종료 중 | — | 유휴 연결 바로 닫기 |
+
+코드 `src/server.c` `handle_connection` · `wait_for_next_request`
+확인 1.1 · 1.0 · 파이프라이닝 · 100번째 · 느린 머리 · 유휴 종료 · 종료 중 닫기
+
+### 3-4. 동시성 트레이드오프와 C10K
+
+> [!NOTE]
+> **스레드 풀 + 크기 제한 큐**. 대가는 쉬는 연결도 작업자를 붙잡는 것.
+
+**우리 모델**
+- 메인 스레드 : `accept` → 연결 FD 를 큐에
+- 작업자 N개 : FD 를 꺼내 **연결이 끝날 때까지** 맡음
+- 큐가 가득 → 503
+- mutex 는 큐만. I/O 중엔 잠금 없음
+
+**세 모델 비교**
+
+| 모델 | 얻는 것 | 내주는 것 |
+|---|---|---|
+| 연결마다 스레드 | 가장 단순 | 스레드가 무한히 늘어남 |
+| **스레드 풀 (선택)** | 스레드 상한, 동기식 코드, 여러 코어 | 쉬는 연결 · 터널이 작업자를 잡음 |
+| 이벤트 루프 | 스레드 하나로 연결 수천 | 상태 기계 필요, 블로킹 하나가 전체를 멈춤 |
+
+**이벤트 루프를 안 고른 이유**
+1. 블로킹 작업이 있다 — DNS(`getaddrinfo`), 디스크 파일(`poll` 불가)
+2. 명세가 C10K 를 목표로 하지 않는다
+3. WSL2 · macOS 둘 다 → `epoll` · `kqueue` 를 못 씀
+4. 동기식 코드가 리뷰 · 테스트로 검증하기 쉽다
+
+**C10K — 1만 연결이 오면 어디서 막히나**
+
+| 순서 | 자원 | 한도 | 넘으면 |
+|---|---|---|---|
+| 1 | 작업자 | 최대 128 | 큐에서 대기 |
+| 2 | 연결 큐 | 최대 4096 | 503 |
+| 3 | `listen` 대기열 | `SOMAXCONN` | 커널이 늦추거나 버림 |
+| 4 | FD 수 | `ulimit -n` | `EMFILE` → 10 ms 쉬고 재시도 |
+| 5 | 스레드 메모리 | 스택 8 MiB (가상) | 작업자 1만 개는 불가 |
+
+- 결론 : **작업자에서 먼저** 막히고, 작업자를 늘리는 길은 메모리가 막는다
+- 다음 단계 (구현 안 함) : 쉬는 연결을 작업자에게서 떼어 내기 → `epoll` · `kqueue` → 상태 기계 파서 → 비동기 DNS
+- 측정으로 본 대가 → [6. 측정 결과](#6-측정-결과)
+
+코드 `src/pool.c`, `src/server.c` `accept_loop` · `reject_overloaded`
+확인 동시 50명 모두 200 · 큐 초과 503 · `make bench`
+
+### 3-5. Proxy 와 Reverse Proxy
+
+> [!NOTE]
+> Reverse 는 **서버 편**, Forward 는 **클라이언트 편**.
+
+| | Reverse | Forward |
+|---|---|---|
+| 누구 편 | 서버 (백엔드를 숨김) | 클라이언트 (목적지를 고름) |
+| 요청 대상 | `GET /api/whoami` | `GET http://host/path`, `CONNECT host:port` |
+| 목적지 | 가장 긴 접두사 + 라운드 로빈 | 요청 URI |
+| 켜기 | `--route` | `--forward-allow` |
+| 함수 | `mw_proxy_serve` | `mw_proxy_forward` · `mw_proxy_tunnel` |
+
+- 공통 : hop-by-hop 헤더 제거, `X-Forwarded-For` 덮어쓰기
+- 백엔드 응답 : 8 MiB 까지, chunked 는 풀어서
+- 실패 : 연결 실패 · 깨진 응답 502, 3초 초과 504, **재시도 없음**
+- CONNECT : TLS 를 풀지 않고 두 소켓을 `poll` 하며 바이트만 넘김
+- 허용 목록이 없으면 안 켜짐 → "열린 프록시" 불가 ([ADR-0001](docs/adr/0001-forward-proxy.md))
+
+확인 라우트 · 라운드 로빈 단위 테스트, 프록시 · 라우팅 · 포워드 · 터널 통합 테스트, `make smoke`
+
+### 3-6. 메모리 관리
+
+> [!NOTE]
+> 연결마다 버퍼 **하나**, 파일은 **조각으로**, 모든 경로에서 **회수**.
+
+- 읽기 버퍼 : 연결마다 하나, 16 KiB 로 시작 → 필요하면 1 MiB 까지
+- 파일 : 통째로 안 올림, 8 KiB 씩
+- 프록시 버퍼 : 요청마다 해제, 8 MiB 넘으면 502
+- `malloc` · `free` 는 같은 모듈 안에서 짝
+- FD 를 누가 닫는지 : [`docs/CONTRACT.md`](docs/CONTRACT.md)
+
+확인 `make sanitize-test` (ASan · UBSan) · `make valgrind` (힙 · 오류 · 남은 FD)
+
+### 3-7. 시그널과 종료
+
+> [!NOTE]
+> 핸들러는 **플래그 + 1바이트**만. 나머지는 메인 루프가.
+
+- 핸들러 : 플래그 세우고 self-pipe 에 1바이트 (async-signal-safe)
+- 작업자 : SIGINT · SIGTERM 을 막음 → 메인만 받음
+- `SIGPIPE` : 무시, 쓰기 실패는 반환값으로
+
+**종료 순서**
+1. 리스너 닫기
+2. 큐의 대기 연결 닫기
+3. 처리 중 요청은 마무리, 유휴 연결 · 터널은 바로 닫기
+4. 작업자 join
+5. 메모리 해제 → 종료 코드 0
+
+코드 `src/server.c` `on_stop_signal` · `mw_server_run`, `src/pool.c`
+확인 종료 통합 테스트 · `make valgrind` 의 SIGINT 종료 검사
+
+---
+
+## 4. 범위와 한도
+
+| 항목 | 한도 | 넘으면 |
+|---|---|---|
+| 메서드 | GET · HEAD · POST (+ 포워드 켜면 CONNECT) | 501 |
+| 버전 | 1.0 · 1.1 | 505 |
+| 요청 줄 | 8 KiB | 414 |
+| 머리 | 16 KiB, 64개 | 431 |
+| 본문 | 1 MiB | 413 |
+| `Host` | 1.1 에서 필수 | 400 |
+| `Expect` | `100-continue` 만 | 417 |
+| 요청 시간 | 5초 | 408 |
+| 백엔드 시간 | 3초 | 504 |
+| 유휴 · 터널 유휴 | 5초 | 닫기 |
+
+- 오류 응답(400 · 408 · 411 · 413 · 414 · 417 · 431 · 501 · 505) 뒤에는 연결을 닫는다
+- 자세히 : [`docs/spec.md`](docs/spec.md) · [`docs/CONTRACT.md`](docs/CONTRACT.md)
+
+**범위 밖**
+- TLS 종료 (HTTPS 는 터널로 넘기기만)
+- chunked 요청 본문
+- HTTP/2 · 압축 · 캐시 · IPv6
+- 백엔드 헬스 체크 · 재시도 · 연결 재사용
+- 동시 터널 수 제한 · 반쪽 닫기
+- OS 별 `epoll` · `kqueue`
+
+---
+
+## 5. 테스트
+
+> [!NOTE]
+> AI 가 짠 코드를 **웹서버가 실제로 겪는 상황**으로 검증한다.
+
+| 명령 | 확인 | CI |
+|---|---|---|
+| `make test` | 단위 31 + 통합 84 | ubuntu · macOS |
+| `make smoke` | 프록시 + A · B, 포워드, CONNECT | ubuntu · macOS |
+| `make sanitize-test` | ASan · UBSan | ubuntu |
+| `make valgrind` | 힙 · 메모리 오류 · FD | valgrind |
+| `make CLANG_FORMAT=clang-format-18 format-check` | 포맷 | ubuntu |
+| `make bench` | 처리량 · 지연 | 수동 |
+
+**통합 테스트 11묶음**
+
+| 묶음 | 실제 상황 |
+|---|---|
+| 첫 응답 | 나뉘어 온 머리, 포트 충돌, 즉시 재시작, 끊긴 클라이언트 |
+| 동시성 | 동시 50명, 큐 초과 503 뒤 회복, 느린 클라이언트 |
+| HTTP 파싱 | 오류 뒤 닫기, 413, `Expect`, HEAD |
+| 정적 파일 | 인코딩된 이름, 경로 탈출, 권한 403, 큰 이진 파일 |
+| 동적 | whoami, echo 바이트 일치, 405 |
+| keep-alive | 1.1 · 1.0, 파이프라이닝, 100번째, 유휴, 접근 로그 |
+| 프록시 | 재작성, 502 · 504, 재시도 없음, 8 MiB |
+| 라우팅 | A · B 번갈아, 긴 접두사, 동시 100 고르게 |
+| 포워드 | origin-form 전달, 403, 꺼지면 400 |
+| 터널 | 양방향, 5초 유휴, SIGINT |
+| 종료 | 0 으로 종료, 응답 마무리, 큰 응답 중 끊김 |
+
+<details>
+<summary><b>그 밖의 명령</b> (펼치기)</summary>
 
 ```sh
-make format                         # clang-format 적용
-make test TEST_ARGS=--self-test-failure # 의도적 실패: 0이 아닌 종료 코드가 정상
+make format                               # 포맷 적용
+make test TEST_ARGS=--self-test-failure   # 의도적 실패 (0 이 아니면 정상)
 make clean
 ```
 
-`make test`는 C 테스트 하나라도 실패하면 실패한다. 테스트 함수는 `tests/test.h`의 CHECK를
-사용하고 `tests/test_main.c`의 목록에 등록한다. 새 `tests/test_*.c`와 `src/*.c`는 Makefile이 찾는다.
-`src/main.c`는 테스트 링크에서 제외된다. 단위·프로세스 테스트 경계는 명세를 따른다.
+</details>
 
-## CI와 협업
+---
 
-- `ci-ubuntu`: 포맷 검사·빌드·단위/통합 테스트·ASan/UBSan.
-- `ci-macos`: 빌드·단위/통합 테스트.
-- `pr-title`: 기존 PR 제목 규칙 검사.
+## 6. 측정 결과
 
-`dev`로 PR을 보내고 사람의 리뷰·머지 결정을 기다린다. 관리자 설정의 필수 검사에는
-위 job 이름을 사용한다. 작업 현황은
-[Week 13 Project](https://github.com/users/kuk-hwan/projects/12), 담당과 다음 작업을 찾는 방법은
-[`docs/NEXT.md`](docs/NEXT.md)를 확인한다. Valgrind·부하 측정 타깃은 3단계에서 추가한다.
+> [!NOTE]
+> keep-alive 연결이 **작업자 수보다 많으면** 처리량이 떨어진다.
+
+`make bench` (#14). 1 KiB 응답, 조합마다 1,000요청, 1회.
+2026-11-25, WSL2 Ubuntu, Ryzen 5 7535HS, 논리 CPU 12개.
+각 칸 = 작업자 **8개 / 64개**.
+
+| 경로 | 동시 | Keep-alive | 처리량 (req/s) | p95 (ms) | failed |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 정적 | 100 | 끔 | 6615.33 / 6978.61 | 32 / 27 | 0 / 0 |
+| 정적 | 50 | 켬 | 49.72 / 1139.55 | 4277 / 48 | 24 / 0 |
+| 정적 | 100 | 켬 | 28.65 / 178.38 | 5015 / 49 | 48 / 27 |
+| 프록시 | 50 | 켬 | 65.99 / 10488.45 | 96 / 11 | 24 / 0 |
+| 프록시 | 100 | 켬 | 33.10 / 196.78 | 5015 / 16 | 48 / 55 |
+
+1. keep-alive **끔** → 동시 100 에서도 수천 req/s
+2. keep-alive **켬** + 동시 > 작업자 → 급락 (작업자가 쉬는 연결을 맡아서, [3-4](#3-4-동시성-트레이드오프와-c10k))
+3. 작업자 8 → 64 → 동시 50 은 회복, 동시 100 은 여전히 failed
+
+전체 32개 조합 → [`docs/bench.md`](docs/bench.md)
+
+---
+
+## 7. 문서
+
+| 문서 | 내용 |
+|---|---|
+| [`docs/spec.md`](docs/spec.md) | 명세 |
+| [`docs/CONTRACT.md`](docs/CONTRACT.md) | 모듈 계약 · 소유권 · 한도 |
+| [`docs/adr/0001-forward-proxy.md`](docs/adr/0001-forward-proxy.md) | 포워드 프록시 결정 |
+| [`docs/bench.md`](docs/bench.md) | 측정 방법 · 결과 |
+| [`GLOSSARY.md`](GLOSSARY.md) | 용어집 |
+| [`docs/NEXT.md`](docs/NEXT.md) | 담당 · 다음 할 일 |
+
+- PR 은 `dev` 로 → CI(`ci-ubuntu` · `ci-valgrind` · `ci-macos` · `pr-title`) 초록 + 리뷰 → 머지
+- 작업 현황 : [Week 13 Project](https://github.com/users/kuk-hwan/projects/12)
