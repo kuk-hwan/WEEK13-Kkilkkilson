@@ -1,6 +1,5 @@
 # Week 13 · Mini Webserver
 
-> [!NOTE]
 > 외부 라이브러리 없이 **POSIX 소켓만으로** 만든 C11 웹 서버.
 > 실행 파일 하나가 **정적 파일 · API · Reverse Proxy · Forward Proxy** 가 된다.
 
@@ -118,7 +117,6 @@ curl -p -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # TLS 없이
 
 ## 2. 요청 흐름
 
-> [!NOTE]
 > 연결은 **큐**를 거쳐 **작업자 하나**가 끝까지 맡는다.
 
 ```mermaid
@@ -175,7 +173,6 @@ flowchart TD
 
 ### 3-1. handshake · `SO_REUSEADDR` · blocking
 
-> [!NOTE]
 > handshake 는 **커널**이, non-blocking 은 **시간 제한**을 위해.
 
 - **handshake**
@@ -195,7 +192,6 @@ flowchart TD
 
 ### 3-2. 요청 경계와 `Content-Length`
 
-> [!NOTE]
 > TCP 는 경계가 없다 → **빈 줄**과 **`Content-Length`** 로 자른다.
 
 - 요청이 쪼개져 오거나, 두 개가 붙어 올 수 있다
@@ -217,7 +213,6 @@ flowchart TD
 
 ### 3-3. keep-alive
 
-> [!NOTE]
 > 연결을 다시 쓰되, **시간 · 횟수 상한**을 둔다.
 
 | 항목 | 값 | 넘으면 |
@@ -233,7 +228,6 @@ flowchart TD
 
 ### 3-4. 동시성 트레이드오프와 C10K
 
-> [!NOTE]
 > **스레드 풀 + 크기 제한 큐**. 대가는 쉬는 연결도 작업자를 붙잡는 것.
 
 **우리 모델**
@@ -275,7 +269,6 @@ flowchart TD
 
 ### 3-5. Proxy 와 Reverse Proxy
 
-> [!NOTE]
 > Reverse 는 **서버 편**, Forward 는 **클라이언트 편**.
 
 | | Reverse | Forward |
@@ -296,7 +289,6 @@ flowchart TD
 
 ### 3-6. 메모리 관리
 
-> [!NOTE]
 > 연결마다 버퍼 **하나**, 파일은 **조각으로**, 모든 경로에서 **회수**.
 
 - 읽기 버퍼 : 연결마다 하나, 16 KiB 로 시작 → 필요하면 1 MiB 까지
@@ -309,7 +301,6 @@ flowchart TD
 
 ### 3-7. 시그널과 종료
 
-> [!NOTE]
 > 핸들러는 **플래그 + 1바이트**만. 나머지는 메인 루프가.
 
 - 핸들러 : 플래그 세우고 self-pipe 에 1바이트 (async-signal-safe)
@@ -358,7 +349,6 @@ flowchart TD
 
 ## 5. 테스트
 
-> [!NOTE]
 > AI 가 짠 코드를 **웹서버가 실제로 겪는 상황**으로 검증한다.
 
 | 명령 | 확인 | CI |
@@ -401,7 +391,6 @@ make clean
 
 ## 6. 측정 결과
 
-> [!NOTE]
 > keep-alive 연결이 **작업자 수보다 많으면** 처리량이 떨어진다.
 
 `make bench` (#14). 1 KiB 응답, 조합마다 1,000요청, 1회.
