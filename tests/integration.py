@@ -39,15 +39,17 @@ def running_server(root, port=None, extra_args=()):
 
 
 @contextmanager
-def server_process(root, port=None, extra_args=()):
+def server_process(root, port=None, extra_args=(), *, binary=None, wrapper=(),
+                   stop_signal=signal.SIGTERM):
     """Starts the server and yields (process, port). Cleanup terminates it if still running and
     fails on sanitizer reports. Tests that stop the server themselves use this directly."""
     port = free_port() if port is None else port
+    binary = BINARY if binary is None else binary
     with tempfile.TemporaryFile(mode="w+b") as log:
         process = subprocess.Popen(
-            [str(BINARY), "--host", "127.0.0.1", "--port", str(port), "--root", str(root),
+            [*wrapper, str(binary), "--host", "127.0.0.1", "--port", str(port), "--root", str(root),
              *extra_args],
-            stdout=subprocess.DEVNULL, stderr=log,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
         )
         try:
             # Ready = the startup line is in stderr. A probe connection would go through the
@@ -64,7 +66,7 @@ def server_process(root, port=None, extra_args=()):
             yield process, port
         finally:
             if process.poll() is None:
-                process.terminate()
+                process.send_signal(stop_signal)
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
