@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
         {"http valid requests", test_http_valid_requests},
         {"http split head needs more", test_http_need_more},
         {"http 400 cases", test_http_bad_request},
+        {"http forward request targets", test_http_forward_targets},
         {"http 411 413 417 501 505", test_http_status_codes},
         {"http 414 431 limits", test_http_limits},
         {"http response headers", test_http_response_headers},

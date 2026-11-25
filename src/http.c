@@ -152,6 +152,71 @@ static mw_parse_result_t fail(int status) {
     return (mw_parse_result_t){MW_PARSE_ERROR, 0, status};
 }
 
+/* "path?query" into path and query views. An empty path (absolute-form "http://h") is "/". */
+static void split_path(const unsigned char *start, size_t length, mw_request_t *request) {
+    const unsigned char *query = memchr(start, '?', length);
+    size_t path_length = query != NULL ? (size_t)(query - start) : length;
+    request->path = path_length > 0 ? (mw_slice_t){start, path_length} : slice_of("/");
+    request->query = query != NULL ? (mw_slice_t){query + 1, length - path_length - 1U}
+                                   : (mw_slice_t){start + length, 0};
+}
+
+/* "host[:port]": a DNS name or IPv4 host, port 1-65535 (80 when optional and absent). '@' of
+ * userinfo and '[' of an IPv6 literal are not host bytes, so both fail here. False means 400. */
+static bool parse_authority(mw_slice_t authority, bool port_required, mw_request_t *request) {
+    const unsigned char *colon = memchr(authority.data, ':', authority.length);
+    size_t host_length = colon != NULL ? (size_t)(colon - authority.data) : authority.length;
+    if (host_length == 0 || (port_required && colon == NULL)) {
+        return false;
+    }
+    for (size_t i = 0; i < host_length; i++) {
+        if (!isalnum(authority.data[i]) && strchr("-._~", authority.data[i]) == NULL) {
+            return false;
+        }
+    }
+    unsigned long port = 80;
+    if (colon != NULL) {
+        size_t digits = authority.length - host_length - 1U;
+        if (digits > 5U) {
+            return false;
+        }
+        port = 0;
+        for (size_t i = 1; i <= digits; i++) {
+            if (!is_digit(colon[i])) {
+                return false;
+            }
+            port = port * 10U + (unsigned long)(colon[i] - '0');
+        }
+        if (port == 0 || port > 65535U) { /* also an empty port */
+            return false;
+        }
+    }
+    request->destination_host = (mw_slice_t){authority.data, host_length};
+    request->destination_port = (uint16_t)port;
+    return true;
+}
+
+/* "http://" authority [path] ["?" query], scheme in any case. False means 400. */
+static bool parse_absolute(mw_slice_t target, mw_request_t *request) {
+    static const char scheme[] = "http://";
+    size_t scheme_length = sizeof(scheme) - 1U;
+    if (target.length < scheme_length ||
+        strncasecmp((const char *)target.data, scheme, scheme_length) != 0) {
+        return false;
+    }
+    const unsigned char *start = target.data + scheme_length;
+    const unsigned char *end = target.data + target.length;
+    const unsigned char *rest = start;
+    while (rest < end && *rest != '/' && *rest != '?') {
+        rest++;
+    }
+    if (!parse_authority((mw_slice_t){start, (size_t)(rest - start)}, false, request)) {
+        return false;
+    }
+    split_path(rest, (size_t)(end - rest), request);
+    return true;
+}
+
 /* Returns 0 or the HTTP error status. Method 501 is last so format errors win. */
 static int parse_request_line(const unsigned char *line, size_t length, mw_request_t *request) {
     const unsigned char *end = line + length;
@@ -163,7 +228,7 @@ static int parse_request_line(const unsigned char *line, size_t length, mw_reque
     mw_slice_t method = {line, (size_t)(sp1 - line)};
     mw_slice_t target = {sp1 + 1, (size_t)(sp2 - sp1) - 1U};
     mw_slice_t version = {sp2 + 1, (size_t)(end - sp2) - 1U};
-    if (method.length == 0 || target.length == 0 || target.data[0] != '/') {
+    if (method.length == 0 || target.length == 0) {
         return 400;
     }
     for (size_t i = 0; i < method.length; i++) {
@@ -176,6 +241,24 @@ static int parse_request_line(const unsigned char *line, size_t length, mw_reque
             return 400;
         }
     }
+    /* Method names are case-sensitive: "get" is not GET. */
+    bool connect = seq(method, "CONNECT");
+    bool supported = connect || seq(method, "GET") || seq(method, "HEAD") || seq(method, "POST");
+    /* CONNECT takes only authority-form; others origin-form, and GET/HEAD/POST absolute-form. */
+    if (connect) {
+        if (!parse_authority(target, true, request)) {
+            return 400;
+        }
+        request->target_form = MW_TARGET_AUTHORITY;
+        request->path = request->query = (mw_slice_t){target.data + target.length, 0};
+    } else if (target.data[0] == '/') {
+        request->target_form = MW_TARGET_ORIGIN;
+        split_path(target.data, target.length, request);
+    } else if (supported && parse_absolute(target, request)) {
+        request->target_form = MW_TARGET_ABSOLUTE;
+    } else {
+        return 400;
+    }
     if (version.length != 8 || memcmp(version.data, "HTTP/", 5) != 0 ||
         !is_digit(version.data[5]) || version.data[6] != '.' || !is_digit(version.data[7])) {
         return 400;
@@ -183,17 +266,11 @@ static int parse_request_line(const unsigned char *line, size_t length, mw_reque
     if (version.data[5] != '1' || (version.data[7] != '0' && version.data[7] != '1')) {
         return 505;
     }
-    /* Method names are case-sensitive: "get" is not GET. */
-    if (!seq(method, "GET") && !seq(method, "HEAD") && !seq(method, "POST")) {
+    if (!supported) {
         return 501;
     }
-    const unsigned char *query = memchr(target.data, '?', target.length);
-    size_t path_length = query != NULL ? (size_t)(query - target.data) : target.length;
     request->method = method;
     request->target = target;
-    request->path = (mw_slice_t){target.data, path_length};
-    request->query = query != NULL ? (mw_slice_t){query + 1, target.length - path_length - 1U}
-                                   : (mw_slice_t){target.data + target.length, 0};
     request->version = version.data[7] == '1' ? MW_HTTP_1_1 : MW_HTTP_1_0;
     return 0;
 }

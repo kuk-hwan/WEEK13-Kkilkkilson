@@ -231,6 +231,11 @@ static void handle_connection(mw_runtime_t *runtime, int client) {
         uint64_t sent_before = mw_net_bytes_written();
         int result =
             mw_http_read_request(client, &input, &request, started + MW_KEEP_ALIVE_IDLE_TIMEOUT_MS);
+        if (result == 0 && request.target_form != MW_TARGET_ORIGIN) {
+            /* No forward proxy yet (#31, #32): absolute-form is 400 and CONNECT 501, answered and
+             * closed like a parse error (docs/spec.md "Forward Proxy"). */
+            result = request.target_form == MW_TARGET_AUTHORITY ? 501 : 400;
+        }
         if (result != 0) {
             /* Not a request we can serve: error page, then close. A silent idle close or a
              * dropped connection is not a request and gets no log line. */

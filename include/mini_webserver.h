@@ -66,9 +66,18 @@ typedef struct {
 
 typedef enum { MW_HTTP_1_0, MW_HTTP_1_1 } mw_http_version_t;
 
+/* origin "/p?q"; absolute "http://host[:port]/p?q" (GET/HEAD/POST); authority "host:port"
+ * (CONNECT only). Absolute and authority are forward requests. */
+typedef enum { MW_TARGET_ORIGIN, MW_TARGET_ABSOLUTE, MW_TARGET_AUTHORITY } mw_target_form_t;
+
 typedef struct {
     mw_slice_t method;
     mw_slice_t target;
+    mw_target_form_t target_form;
+    /* Forward requests: host borrows the input, port defaults to 80. Empty and 0 for origin. */
+    mw_slice_t destination_host;
+    uint16_t destination_port;
+    /* Origin: split from target. Absolute: the URI's path part ("/" if empty). Authority: empty. */
     mw_slice_t path;
     mw_slice_t query;
     mw_http_version_t version;
