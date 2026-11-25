@@ -33,6 +33,7 @@
 #define MW_REQUEST_TIMEOUT_MS 5000
 #define MW_KEEP_ALIVE_IDLE_TIMEOUT_MS 5000
 #define MW_UPSTREAM_TIMEOUT_MS 3000
+#define MW_TUNNEL_IDLE_TIMEOUT_MS 5000
 #define MW_MAX_REQUESTS_PER_CONNECTION 100U
 
 typedef enum {
@@ -230,5 +231,12 @@ int mw_proxy_serve(const mw_config_t *config, mw_route_t *route, int client_fd,
  * the destination (IPv4, first address) and forward like mw_proxy_serve. Keeps the connection. */
 int mw_proxy_forward(const mw_config_t *config, int client_fd, const mw_request_t *request,
                      bool keep_alive, mw_deadline_t deadline);
+/* CONNECT with the forward proxy on: 403 outside the allow list, 502 when the name does not
+ * resolve or the connection fails, 504 on a connect timeout. Otherwise 200 Connection Established
+ * (no Content-Length), `pending` (bytes after the head) to the destination first, then bytes both
+ * ways until both sides are quiet for 5 s, either side ends or fails, or runtime->stopping. The
+ * caller closes the client connection afterwards. Returns the status sent. */
+int mw_proxy_tunnel(const mw_runtime_t *runtime, int client_fd, const mw_request_t *request,
+                    mw_slice_t pending);
 
 #endif

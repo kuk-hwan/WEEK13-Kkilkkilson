@@ -115,6 +115,14 @@ else
     fail "curl -x http://127.0.0.1:$PB/api/whoami: got '$body'"
 fi
 
+# CONNECT without TLS: curl opens a tunnel to B and speaks plain HTTP through it.
+body=$(curl -s -p -x "$BASE" "http://127.0.0.1:$PB/api/whoami")
+if [ "$body" = "{\"name\":\"B\",\"port\":$PB}" ]; then
+    pass "curl -x --proxytunnel reaches backend B through CONNECT"
+else
+    fail "curl -p -x http://127.0.0.1:$PB/api/whoami: got '$body'"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
     echo "smoke: $FAILED check(s) failed"
     exit 1

@@ -42,7 +42,7 @@ def check_memory(binary, reports):
         (root / "index.html").write_bytes(content)
         with checked_server(binary, root, reports / "backend.log",
                             ("--name", "valgrind-backend")) as backend:
-            route = ("--route", f"/api/=127.0.0.1:{backend}")
+            route = ("--route", f"/api/=127.0.0.1:{backend}", "--forward-allow", "127.0.0.1/32")
             with checked_server(binary, root, reports / "proxy.log", route) as proxy:
                 status, _, body = request(proxy)
                 if (status, body) != (OK_STATUS, content):
@@ -59,6 +59,17 @@ def check_memory(binary, reports):
                     status, _, body = read_one_response(client)
                     if (status, body) != (OK_STATUS, b"echo"):
                         raise AssertionError(f"Unexpected routed POST response: {status!r}, {body!r}")
+
+                # CONNECT tunnel to the backend; its close ends the tunnel and frees both FDs.
+                with socket.create_connection(("127.0.0.1", proxy), timeout=8) as client:
+                    client.sendall(b"CONNECT 127.0.0.1:%d HTTP/1.1\r\nHost: x\r\n\r\n"
+                                   b"GET /api/whoami HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                                   % backend)
+                    data = bytearray()
+                    while chunk := client.recv(65536):
+                        data.extend(chunk)
+                    if not data.startswith(b"HTTP/1.1 200 Connection Established\r\n\r\nHTTP/1.1 200 OK"):
+                        raise AssertionError(f"Unexpected tunnel response: {bytes(data[:200])!r}")
 
 
 def main():

@@ -1492,6 +1492,154 @@ class ForwardProxyTests(unittest.TestCase):
             pass
 
 
+
+@contextmanager
+def echo_destination():
+    """Destination that echoes every byte back on each connection. Yields (port, received)."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(0.1)
+    received = bytearray()
+    stop = threading.Event()
+
+    def echo(conn):
+        with conn:
+            conn.settimeout(0.1)
+            while not stop.is_set():
+                try:
+                    chunk = conn.recv(65536)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                received.extend(chunk)
+                conn.sendall(chunk)
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except socket.timeout:
+                continue
+            threading.Thread(target=echo, args=(conn,), daemon=True).start()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield listener.getsockname()[1], received
+    finally:
+        stop.set()
+        thread.join(timeout=3)
+        listener.close()
+
+
+def read_head(client):
+    """Reads up to the blank line; returns (status, headers, bytes already past the head)."""
+    data = bytearray()
+    while b"\r\n\r\n" not in data:
+        chunk = client.recv(65536)
+        if not chunk:
+            raise AssertionError(f"Closed before a complete head: {bytes(data[:200])!r}")
+        data.extend(chunk)
+    head, _, rest = bytes(data).partition(b"\r\n\r\n")
+    lines = head.decode("ascii").split("\r\n")
+    return lines[0], dict(line.split(": ", 1) for line in lines[1:]), rest
+
+
+def recv_exactly(client, size, already=b""):
+    data = bytearray(already)
+    while len(data) < size:
+        chunk = client.recv(65536)
+        if not chunk:
+            raise AssertionError(f"Closed after {len(data)} of {size} bytes")
+        data.extend(chunk)
+    return bytes(data)
+
+
+class TunnelTests(unittest.TestCase):
+    """CONNECT with --forward-allow (docs/spec.md "Forward Proxy", CONNECT and 터널)."""
+
+    ESTABLISHED = "HTTP/1.1 200 Connection Established"
+    ALLOW_LOCAL = ("--forward-allow", "127.0.0.1/32")
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-tunnel-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "index.html").write_bytes(b"<h1>front</h1>\n")
+
+    def connect(self, proxy, dest, after_head=b"", timeout=8):
+        client = socket.create_connection(("127.0.0.1", proxy), timeout=timeout)
+        client.sendall(b"CONNECT 127.0.0.1:%d HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n" % (dest, dest)
+                       + after_head)
+        return client
+
+    def test_bytes_cross_both_ways_and_the_200_has_no_content_length(self):
+        hello = b"\x16\x03\x01hello-after-head"
+        binary = bytes(range(256)) * 512
+        with echo_destination() as (dest, received):
+            with running_server(self.root, extra_args=self.ALLOW_LOCAL) as proxy:
+                with self.connect(proxy, dest, hello) as client:
+                    status, headers, rest = read_head(client)
+                    self.assertEqual(status, self.ESTABLISHED)
+                    self.assertNotIn("Content-Length", headers)
+                    self.assertEqual(recv_exactly(client, len(hello), rest), hello)
+                    client.sendall(binary)
+                    self.assertEqual(recv_exactly(client, len(binary)), binary)
+                # The client's close ends the tunnel and frees the worker for the next request.
+                self.assertEqual(request(proxy)[0], OK_STATUS)
+        self.assertEqual(bytes(received), hello + binary)
+
+    def test_tunnel_closes_after_five_quiet_seconds(self):
+        with echo_destination() as (dest, _):
+            with running_server(self.root, extra_args=self.ALLOW_LOCAL) as proxy:
+                with self.connect(proxy, dest, timeout=10) as client:
+                    self.assertEqual(read_head(client)[0], self.ESTABLISHED)
+                    started = time.monotonic()
+                    self.assertEqual(client.recv(1), b"")
+                    self.assertTrue(4.5 <= time.monotonic() - started < 7)
+
+    def test_sigint_closes_an_open_tunnel_and_exits_zero(self):
+        with echo_destination() as (dest, _):
+            with server_process(self.root, extra_args=self.ALLOW_LOCAL) as (process, proxy):
+                with self.connect(proxy, dest) as client:
+                    self.assertEqual(read_head(client)[0], self.ESTABLISHED)
+                    process.send_signal(signal.SIGINT)
+                    client.settimeout(3)  # well under the 5 s idle limit
+                    self.assertEqual(client.recv(1), b"")
+                self.assertEqual(wait_exit(process, 3), 0)
+
+    def test_failures_answer_and_close(self):
+        # A full accept queue drops new SYNs, so connect() itself times out (504).
+        full = socket.socket()
+        full.bind(("127.0.0.1", 0))
+        full.listen(1)  # macOS treats 0 as no limit
+        self.addCleanup(full.close)
+        for _ in range(8):
+            filler = socket.socket()
+            filler.setblocking(False)
+            filler.connect_ex(full.getsockname())
+            self.addCleanup(filler.close)
+        cases = [(self.ALLOW_LOCAL, free_port(), "HTTP/1.1 502 Bad Gateway"),
+                 (self.ALLOW_LOCAL, full.getsockname()[1], "HTTP/1.1 504 Gateway Timeout"),
+                 (("--forward-allow", "10.0.0.0/8"), free_port(), "HTTP/1.1 403 Forbidden")]
+        for args, dest, expected in cases:
+            with self.subTest(expected=expected):
+                with running_server(self.root, extra_args=args) as proxy:
+                    started = time.monotonic()
+                    with self.connect(proxy, dest, b"early bytes") as client:
+                        status, headers, _ = read_response(client)  # EOF means closed
+                    self.assertEqual(status, expected)
+                    self.assertEqual(headers["Connection"], "close")
+                    if "504" in expected:
+                        self.assertTrue(2.8 <= time.monotonic() - started < 4.5)
+        with running_server(self.root, extra_args=self.ALLOW_LOCAL) as proxy:
+            with socket.create_connection(("127.0.0.1", proxy), timeout=8) as client:
+                client.sendall(b"CONNECT no-such-host.invalid:443 HTTP/1.1\r\nHost: x\r\n\r\n")
+                status, headers, _ = read_response(client)
+            self.assertEqual((status, headers["Connection"]), ("HTTP/1.1 502 Bad Gateway", "close"))
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)

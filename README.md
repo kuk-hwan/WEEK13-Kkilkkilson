@@ -67,9 +67,16 @@ curl -i --data '' http://127.0.0.1:8080/index.html # 405 + Allow: GET, HEAD
 ./build/mini-webserver --port 9001 --name A    # 목적지로 쓸 서버
 curl -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # {"name":"A","port":9001}
 curl -x http://127.0.0.1:8080 http://example.com/
+curl -x http://127.0.0.1:8080 https://example.com/    # CONNECT 터널
+curl -p -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # TLS 없이 CONNECT 확인
 ```
 
-- `http://`만 된다. CONNECT 터널(`https://`)은 #32에서 붙는다. 그전까지 CONNECT는 501이다.
+- `https://`는 `CONNECT host:port` 터널로 간다. 목적지에 연결되면 `200 Connection Established`를
+  보내고, 그 뒤로는 바이트를 해석 없이 양쪽으로 넘긴다(TLS 안은 보지 않는다). 양쪽 다 5초 조용하거나,
+  한쪽이 끊거나, 서버가 종료 중이면 닫는다. 실패는 403·502·504이고, CONNECT는 성공이든 실패든 끝나면
+  연결을 닫는다. 안 켜면 CONNECT는 501이다.
+- **터널 하나가 작업자 하나를 끝날 때까지 쓴다.** 브라우저는 터널을 여러 개 열어 두니, 브라우저의
+  프록시로 쓸 때는 `--workers`를 늘려라(예: `--workers 64`). 작업자가 모자라면 새 연결이 503을 받는다.
 - 목적지에는 origin-form 요청 줄(`GET /경로?쿼리 HTTP/1.1`)과 URI의 `host:port`를 담은
   `Host`가 간다. `Proxy-Connection`, `Proxy-Authorization`은 빼고 `X-Forwarded-For`는
   실제 연결 주소로 덮어쓴다.
@@ -89,6 +96,7 @@ main (src/main.c)
       → accept → mw_pool_submit (src/pool.c): 연결 큐와 작업자 스레드
       → mw_app_handle_connection → mw_http_read_request (src/http.c): 머리·본문 수신과 검증
       → absolute-form(포워드 프록시 켬): mw_proxy_forward (src/proxy.c)
+      → CONNECT(포워드 프록시 켬): mw_proxy_tunnel (src/proxy.c), 끝나면 연결을 닫음
       → 라우트 일치: mw_proxy_serve (src/proxy.c)
       → 로컬 동적 경로: serve_dynamic (src/server.c)
       → 그 밖: mw_static_serve (src/static.c)
