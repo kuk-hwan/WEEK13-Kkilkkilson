@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="347" viewBox="0 0 1080 347" role="img" aria-labelledby="title desc">
+<title id="title">Proxy 처리 방식 비교</title><desc id="desc">표: Reverse Proxy | Forward Proxy / 경로 접두사를 기준으로 라우팅 | 요청 URI를 기준으로 목적지 결정 / 라운드 로빈으로 백엔드 분산 | HTTP 전달 및 HTTPS CONNECT 터널 / 백엔드 연결 실패 502, 시간 초과 504 | 허용된 클라이언트만 이용 가능</desc>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#92999B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="g" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#2AA58B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="r" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#D94D50" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1080" height="347" rx="22" fill="#161616"/>
+<g font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, Arial, sans-serif">
+<text x="32" y="45" font-size="26" font-weight="700" fill="#F5F5F5" text-anchor="start">Proxy 처리 방식 비교</text>
+<rect x="30" y="72" width="1020" height="61.82" rx="0" fill="#104B41" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="105.85" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">Reverse Proxy</text>
+<path d="M540 72 V133.82" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="556" y="105.85" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">Forward Proxy</text>
+<rect x="30" y="133.82" width="1020" height="61.82" rx="0" fill="#222626" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="167.67" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">경로 접두사를 기준으로 라우팅</text>
+<path d="M540 133.82 V195.64" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="556" y="167.67" font-size="21" font-weight="400" fill="#BFC5C7" text-anchor="start">요청 URI를 기준으로 목적지 결정</text>
+<rect x="30" y="195.64" width="1020" height="61.82" rx="0" fill="#1B1E1E" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="229.48999999999998" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">라운드 로빈으로 백엔드 분산</text>
+<path d="M540 195.64 V257.46" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="556" y="229.48999999999998" font-size="21" font-weight="400" fill="#BFC5C7" text-anchor="start">HTTP 전달 및 HTTPS CONNECT 터널</text>
+<rect x="30" y="257.46" width="1020" height="61.82" rx="0" fill="#222626" stroke="#343A3A" stroke-width="1"/>
+<text x="46" y="291.31" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">백엔드 연결 실패 502, 시간 초과 504</text>
+<path d="M540 257.46 V319.28" fill="none" stroke="#343A3A" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="556" y="291.31" font-size="21" font-weight="400" fill="#BFC5C7" text-anchor="start">허용된 클라이언트만 이용 가능</text>
+</g></svg>

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="420" viewBox="0 0 1080 420" role="img" aria-labelledby="title desc">
+<title id="title">Proxy 비교</title><desc id="desc">Reverse Proxy는 서버를 대리하고 Forward Proxy는 클라이언트를 대리</desc>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#92999B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="g" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#2AA58B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="r" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#D94D50" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1080" height="420" rx="22" fill="#161616"/>
+<g font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, Arial, sans-serif">
+<text x="32" y="45" font-size="26" font-weight="700" fill="#F5F5F5" text-anchor="start">Proxy 요청 전달 구조</text>
+<rect x="30" y="70" width="1020" height="158" rx="14" fill="none" stroke="#626768" stroke-width="1.5"/>
+<rect x="30" y="242" width="1020" height="148" rx="14" fill="none" stroke="#626768" stroke-width="1.5"/>
+<text x="50" y="100" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">Reverse Proxy</text>
+<text x="1025" y="100" font-size="18" font-weight="400" fill="#BFC5C7" text-anchor="end">서버 측 · Round Robin</text>
+<rect x="75" y="131" width="210" height="66" rx="13" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="180.0" y="171.82" font-size="23" font-weight="700" fill="#F5F5F5" text-anchor="middle">클라이언트</text>
+<rect x="400" y="131" width="250" height="66" rx="13" fill="#104B41" stroke="#2AA58B" stroke-width="2"/>
+<text x="525.0" y="171.82" font-size="23" font-weight="700" fill="#F5F5F5" text-anchor="middle">Reverse Proxy</text>
+<rect x="795" y="109" width="225" height="47" rx="13" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="907.5" y="139.3" font-size="20" font-weight="700" fill="#F5F5F5" text-anchor="middle">백엔드 A</text>
+<rect x="795" y="167" width="225" height="47" rx="13" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="907.5" y="197.3" font-size="20" font-weight="700" fill="#F5F5F5" text-anchor="middle">백엔드 B</text>
+<path d="M285 164 H400" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a)"/>
+<path d="M650 164 H730 V132 H795" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a)"/>
+<path d="M730 164 V190 H795" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="342" y="151" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="middle">요청</text>
+<text x="50" y="272" font-size="21" font-weight="700" fill="#F5F5F5" text-anchor="start">Forward Proxy</text>
+<text x="1025" y="272" font-size="18" font-weight="400" fill="#BFC5C7" text-anchor="end">클라이언트 측 · 목적지 지정</text>
+<rect x="75" y="297" width="210" height="66" rx="13" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="180.0" y="337.82" font-size="23" font-weight="700" fill="#F5F5F5" text-anchor="middle">클라이언트</text>
+<rect x="400" y="297" width="250" height="66" rx="13" fill="#104B41" stroke="#2AA58B" stroke-width="2"/>
+<text x="525.0" y="337.82" font-size="23" font-weight="700" fill="#F5F5F5" text-anchor="middle">Forward Proxy</text>
+<rect x="795" y="297" width="225" height="66" rx="13" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="907.5" y="337.82" font-size="23" font-weight="700" fill="#F5F5F5" text-anchor="middle">목적지 서버</text>
+<path d="M285 330 H400" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a)"/>
+<path d="M650 330 H795" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="342" y="317" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="middle">요청</text>
+<text x="721" y="317" font-size="16" font-weight="400" fill="#BFC5C7" text-anchor="middle">전달</text>
+</g></svg>

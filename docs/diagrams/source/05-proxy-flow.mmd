@@ -1,0 +1,12 @@
+flowchart LR
+    subgraph RP["Reverse Proxy"]
+        direction LR
+        C1["클라이언트"] --> R["프록시"]
+        R --> A["백엔드 A"]
+        R --> B["백엔드 B"]
+    end
+    subgraph FP["Forward Proxy"]
+        direction LR
+        C2["클라이언트"] --> F["프록시"]
+        F --> D["목적지 서버"]
+    end

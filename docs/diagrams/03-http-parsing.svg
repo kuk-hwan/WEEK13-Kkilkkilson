@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="360" viewBox="0 0 1080 360" role="img" aria-labelledby="title desc">
+<title id="title">HTTP 요청 경계</title><desc id="desc">TCP 수신 버퍼에서 헤더와 본문, 다음 요청을 구분</desc>
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#92999B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="g" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#2AA58B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="r" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#D94D50" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1080" height="360" rx="22" fill="#161616"/>
+<g font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, Apple SD Gothic Neo, Arial, sans-serif">
+<text x="32" y="45" font-size="26" font-weight="700" fill="#F5F5F5" text-anchor="start">HTTP 요청 경계</text>
+<text x="32" y="75" font-size="17" font-weight="400" fill="#BFC5C7" text-anchor="start">TCP는 메시지 경계를 보장하지 않음</text>
+<text x="36" y="112" font-size="20" font-weight="700" fill="#BFC5C7" text-anchor="start">수신 버퍼</text>
+<rect x="36" y="127" width="320" height="58" rx="8" fill="#104B41" stroke="#2AA58B" stroke-width="2"/>
+<text x="196.0" y="163" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="middle">HTTP 헤더</text>
+<rect x="356" y="127" width="160" height="58" rx="8" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="436.0" y="163" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="middle">\r\n\r\n</text>
+<rect x="516" y="127" width="280" height="58" rx="8" fill="#104B41" stroke="#2AA58B" stroke-width="2"/>
+<text x="656.0" y="163" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="middle">본문 (Content-Length)</text>
+<rect x="796" y="127" width="248" height="58" rx="8" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="920.0" y="163" font-size="19" font-weight="700" fill="#F5F5F5" text-anchor="middle">남은 바이트</text>
+<path d="M196 185 V221 H380 V245" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a)"/>
+<path d="M436 185 V221 H380" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M656 185 V221 H380" fill="none" stroke="#92999B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M920 185 V245" fill="none" stroke="#2AA58B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8 7" marker-end="url(#g)"/>
+<rect x="190" y="247" width="380" height="76" rx="13" fill="#104B41" stroke="#2AA58B" stroke-width="2"/>
+<text x="380.0" y="281.0" font-size="23" font-weight="700" fill="#F5F5F5" text-anchor="middle">현재 요청 처리</text>
+<text x="380.0" y="308.0" font-size="19" font-weight="400" fill="#BFC5C7" text-anchor="middle">헤더 경계 + 본문 길이</text>
+<rect x="795" y="247" width="250" height="76" rx="13" fill="#343838" stroke="#686D6E" stroke-width="2"/>
+<text x="920.0" y="281.0" font-size="22" font-weight="700" fill="#F5F5F5" text-anchor="middle">다음 요청</text>
+<text x="920.0" y="308.0" font-size="18" font-weight="400" fill="#BFC5C7" text-anchor="middle">파이프라이닝</text>
+</g></svg>
