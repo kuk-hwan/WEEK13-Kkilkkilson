@@ -8,6 +8,8 @@ CFLAGS ?= -O2 -g
 LDFLAGS ?=
 LDLIBS += -pthread
 TEST_ARGS ?=
+BENCH_REQUESTS ?= 1000
+BENCH_REPORT ?= $(BUILD_DIR)/bench.csv
 
 SOURCES = $(wildcard src/*.c)
 LIB_SOURCES = $(filter-out src/main.c,$(SOURCES))
@@ -16,7 +18,7 @@ SERVER_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 TEST_OBJECTS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(TEST_SOURCES) $(LIB_SOURCES))
 FORMAT_FILES = $(sort $(wildcard include/*.h src/*.c tests/*.c tests/*.h))
 
-.PHONY: all test smoke sanitize-test format-check format clean
+.PHONY: all test smoke sanitize-test valgrind bench format-check format clean
 all: $(BUILD_DIR)/mini-webserver
 
 $(BUILD_DIR)/mini-webserver: $(SERVER_OBJECTS)
@@ -41,6 +43,12 @@ sanitize-test:
 		CFLAGS='-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined' \
 		LDFLAGS='-fsanitize=address,undefined' \
 		ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 test
+
+valgrind: $(BUILD_DIR)/mini-webserver
+	$(PYTHON) tests/check_memory.py --binary "$<" --reports "$(BUILD_DIR)/valgrind"
+
+bench: $(BUILD_DIR)/mini-webserver
+	$(PYTHON) tests/bench.py --binary "$<" --requests "$(BENCH_REQUESTS)" --report "$(BENCH_REPORT)"
 
 format-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)

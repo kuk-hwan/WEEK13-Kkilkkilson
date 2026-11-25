@@ -34,6 +34,22 @@ jobs:
       - name: Sanitizers
         run: make sanitize-test
 
+  valgrind:
+    name: ci-valgrind
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Valgrind
+        run: sudo apt-get update -qq && sudo apt-get install -y valgrind
+      - name: Check leaks, memory errors, and file descriptors
+        run: make valgrind
+      - name: Upload Valgrind logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valgrind-logs
+          path: build/valgrind/*.log
+
   macos:
     name: ci-macos
     runs-on: macos-latest
