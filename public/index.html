@@ -3,11 +3,40 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Mini Webserver · First Response</title>
+    <title>Mini Webserver 데모</title>
+    <link rel="stylesheet" href="/style.css">
   </head>
   <body>
-    <h1>Mini Webserver가 응답했습니다.</h1>
-    <p>C와 POSIX 소켓으로 받은 첫 HTTP 응답입니다.</p>
-    <p>socket → bind → listen → accept → index.html → HTTP 응답</p>
+    <header>
+      <img src="/logo.png" alt="Mini Webserver 로고" width="96" height="96">
+      <div>
+        <h1>Mini Webserver 데모</h1>
+        <p>C와 POSIX 소켓으로 만든 서버가 정적 파일과 프록시 응답을 돌려줍니다.</p>
+      </div>
+    </header>
+    <main>
+      <section>
+        <h2>어느 백엔드가 답했나</h2>
+        <p><code>GET /api/whoami</code>를 누를 때마다 A와 B가 번갈아 나옵니다.</p>
+        <button id="whoami" type="button">GET /api/whoami</button>
+      </section>
+      <section>
+        <h2>UTF-8 본문 POST</h2>
+        <p><code>POST /api/echo</code>가 보낸 본문을 그대로 돌려줍니다.</p>
+        <input id="text" type="text" value="안녕하세요, 미니 웹서버!" aria-label="보낼 문장">
+        <button id="echo" type="button">POST /api/echo</button>
+      </section>
+      <section>
+        <h2>없는 파일</h2>
+        <p>없는 경로를 요청하면 404가 옵니다.</p>
+        <button id="missing" type="button">GET /missing.html</button>
+      </section>
+      <section>
+        <h2>응답</h2>
+        <p id="status">아직 요청하지 않았습니다.</p>
+        <pre id="body"></pre>
+      </section>
+    </main>
+    <script src="/app.js"></script>
   </body>
 </html>
