@@ -122,13 +122,67 @@ bool test_config_route(void) {
     mw_config_destroy(&config);
     CHECK(config.route_count == 0);
 
-    const char *bad[] = {
-        "api/=127.0.0.1:8001", "/api/",       "/api/=127.0.0.1", "/api/=127.0.0.1:",
-        "/api/=127.0.0.1:0",   "/api/=:8001", "=127.0.0.1:8001", "/a:1=127.0.0.1"};
+    const char *bad[] = {"api/=127.0.0.1:8001",
+                         "/api/",
+                         "/api/=127.0.0.1",
+                         "/api/=127.0.0.1:",
+                         "/api/=127.0.0.1:0",
+                         "/api/=:8001",
+                         "=127.0.0.1:8001",
+                         "/a:1=127.0.0.1",
+                         "/api/=127.0.0.1:8001,",
+                         "/api/=,127.0.0.1:8001",
+                         "/api/=127.0.0.1:8001,,127.0.0.1:8002",
+                         "/api/=127.0.0.1:8001,127.0.0.1:0",
+                         "/api/=127.0.0.1:8001,127.0.0.1"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         char *wrong[] = {"mini-webserver", "--route", (char *)bad[i]};
         CHECK(mw_config_parse(&config, 3, wrong) == 2);
         CHECK(config.route_count == 0);
     }
+    return true;
+}
+
+bool test_config_route_lists(void) {
+    mw_config_t config;
+    char *args[] = {"mini-webserver", "--route", "/api/=127.0.0.1:8001,127.0.0.1:8002", "--route",
+                    "/api/admin/=localhost:8003"};
+    CHECK(mw_config_parse(&config, 5, args) == 0);
+    CHECK(config.route_count == 2 && config.routes[0].backend_count == 2);
+    CHECK(config.routes[0].backends[0].port == 8001 && config.routes[0].backends[1].port == 8002);
+    CHECK(strcmp(config.routes[0].backends[1].host, "127.0.0.1") == 0);
+    CHECK(ntohs(((const struct sockaddr_in *)&config.routes[0].backends[1].address)->sin_port) ==
+          8002);
+    CHECK(config.routes[1].backend_count == 1 && config.routes[1].backends[0].port == 8003);
+    mw_config_destroy(&config);
+
+    /* 8 backends per route and 16 routes are allowed; one more of either is an argument error. */
+    char eight[256] = "/a/=";
+    char nine[512];
+    for (int i = 0; i < 8; i++) {
+        char entry[32];
+        (void)snprintf(entry, sizeof(entry), "%s127.0.0.1:%d", i == 0 ? "" : ",", 9001 + i);
+        strcat(eight, entry);
+    }
+    (void)snprintf(nine, sizeof(nine), "%s,127.0.0.1:9009", eight);
+    char *ok_args[] = {"mini-webserver", "--route", eight};
+    CHECK(mw_config_parse(&config, 3, ok_args) == 0 && config.routes[0].backend_count == 8);
+    mw_config_destroy(&config);
+    char *nine_args[] = {"mini-webserver", "--route", nine};
+    CHECK(mw_config_parse(&config, 3, nine_args) == 2);
+    CHECK(config.route_count == 0);
+
+    char texts[17][32];
+    char *many[2 + 2 * 17] = {"mini-webserver"};
+    int argc = 1;
+    for (int i = 0; i < 17; i++) {
+        (void)snprintf(texts[i], sizeof(texts[i]), "/r%d/=127.0.0.1:8001", i);
+        many[argc++] = "--route";
+        many[argc++] = texts[i];
+    }
+    CHECK(mw_config_parse(&config, 1 + 2 * 16, many) == 0 && config.route_count == 16);
+    mw_config_destroy(&config);
+    CHECK(mw_config_parse(&config, argc, many) == 2);
+    CHECK(config.route_count == 0);
     return true;
 }
