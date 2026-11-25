@@ -23,7 +23,9 @@
 | 갈래 | 담당 | 이슈(차례) |
 |---|---|---|
 | A 기반·검사 | [@kuk-hwan](https://github.com/kuk-hwan) | [#3](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/3)(1) → [#4](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/4)(2) → [#6](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/6)(3) → [#14](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/14)(7) |
-| B HTTP·프록시 | [@Pancheble](https://github.com/Pancheble) | [#5](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/5)(3) → [#10](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/10)(4) → [#11](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/11)(5) → [#13](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/13)(6) |
+| B HTTP·프록시 | [@Pancheble](https://github.com/Pancheble) | [#5](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/5)(3) → [#10](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/10)(4) → [#11](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/11)(5) → [#13](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/13)(6) → [#30](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/30)(7) → [#31](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/31)(8) → [#32](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/32)(9) |
+
+4단계 포워드 프록시([#28](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/28))의 #30은 명세 PR이 머지되어 #28이 닫혀야 시작한다. #31은 #9(keep-alive 루프)도 기다린다.
 | C 동시성·데모·문서 | [@Jongeume](https://github.com/Jongeume) | [#7](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/7)(3) → [#8](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/8)(4) → [#9](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/9)(5) → [#12](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/12)(6) → [#15](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/15)(7) → [#16](https://github.com/kuk-hwan/WEEK13-Kkilkkilson/issues/16)(8) |
 
 ### 상태 자동화
