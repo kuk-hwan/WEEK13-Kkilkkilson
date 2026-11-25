@@ -53,7 +53,8 @@ PIDS+=($!)
 "$BIN" --host 127.0.0.1 --port "$PB" --root "$ROOT" --name B >"$TMP/b.log" 2>&1 &
 PIDS+=($!)
 "$BIN" --host 127.0.0.1 --port "$PP" --root "$ROOT" --name proxy \
-    --route "/api=127.0.0.1:$PA,127.0.0.1:$PB" >"$TMP/proxy.log" 2>&1 &
+    --route "/api=127.0.0.1:$PA,127.0.0.1:$PB" --forward-allow 127.0.0.1/32 \
+    >"$TMP/proxy.log" 2>&1 &
 PIDS+=($!)
 
 for port in "$PA" "$PB" "$PP"; do
@@ -104,6 +105,14 @@ if cmp -s "$TMP/sent.txt" "$TMP/echoed.txt"; then
     pass "POST /api/echo returns UTF-8 body byte-exact"
 else
     fail "POST /api/echo body differs from what was sent"
+fi
+
+# Forward proxy: curl sends absolute-form, the proxy goes straight to B (no route).
+body=$(curl -s -x "$BASE" "http://127.0.0.1:$PB/api/whoami")
+if [ "$body" = "{\"name\":\"B\",\"port\":$PB}" ]; then
+    pass "curl -x reaches backend B directly"
+else
+    fail "curl -x http://127.0.0.1:$PB/api/whoami: got '$body'"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

@@ -23,6 +23,7 @@
 #define MW_MAX_UPSTREAM_BYTES (8U * 1024U * 1024U)
 #define MW_MAX_ROUTES 16U
 #define MW_MAX_BACKENDS 8U
+#define MW_MAX_FORWARD_ALLOW 16U
 #define MW_MIN_WORKERS 1U
 #define MW_MAX_WORKERS 128U
 #define MW_MIN_QUEUE_CAPACITY 1U
@@ -115,6 +116,12 @@ typedef struct {
     pthread_mutex_t selection_lock;
 } mw_route_t;
 
+/* One --forward-allow entry, both in host byte order; network has no bits outside mask. */
+typedef struct {
+    uint32_t network;
+    uint32_t mask;
+} mw_cidr_t;
+
 typedef struct {
     char host[INET_ADDRSTRLEN];
     uint16_t port;
@@ -126,6 +133,9 @@ typedef struct {
     char name[MW_MAX_SERVER_NAME + 1U];
     mw_route_t routes[MW_MAX_ROUTES];
     size_t route_count;
+    /* Empty means the forward proxy is off. */
+    mw_cidr_t forward_allow[MW_MAX_FORWARD_ALLOW];
+    size_t forward_allow_count;
 } mw_config_t;
 
 typedef struct {
@@ -158,6 +168,8 @@ typedef struct {
 /* config: initialize/destroy on the same module, including route mutexes. */
 int mw_config_parse(mw_config_t *config, int argc, char *const argv[]);
 void mw_config_destroy(mw_config_t *config);
+/* Pure: is the IPv4 client (network byte order, as in sockaddr_in) inside one of the entries? */
+bool mw_config_forward_allowed(const mw_cidr_t *allow, size_t count, struct in_addr client);
 
 /* server: owns listener, signal pipe and pool; borrows mutable route counters. */
 int mw_server_run(mw_config_t *config);
@@ -214,5 +226,9 @@ mw_route_t *mw_proxy_match_route(mw_route_t *routes, size_t route_count, mw_slic
 const mw_backend_t *mw_proxy_next_backend(mw_route_t *route);
 int mw_proxy_serve(const mw_config_t *config, mw_route_t *route, int client_fd,
                    const mw_request_t *request, bool keep_alive, mw_deadline_t deadline);
+/* Absolute-form request with the forward proxy on: 403 outside the allow list, otherwise resolve
+ * the destination (IPv4, first address) and forward like mw_proxy_serve. Keeps the connection. */
+int mw_proxy_forward(const mw_config_t *config, int client_fd, const mw_request_t *request,
+                     bool keep_alive, mw_deadline_t deadline);
 
 #endif

@@ -57,6 +57,28 @@ curl -i --data '' http://127.0.0.1:8080/index.html # 405 + Allow: GET, HEAD
 호스트는 IPv4 주소, 루트는 존재하는 디렉터리여야 한다. 잘못된 인자는 종료 코드 2,
 포트 충돌 등의 실행 오류는 1이다. 이번 단계는 Ctrl-C로 종료하며 정상 종료 절차는 #8에서 구현한다.
 
+## 포워드 프록시
+
+`--forward-allow IPv4/길이`를 하나라도 주면 켜진다(16개까지). 목록 밖 클라이언트의 포워드
+요청은 403이고, 안 주면 absolute-form 요청은 지금처럼 400이다. 목적지는 막지 않는다.
+
+```sh
+./build/mini-webserver --port 8080 --forward-allow 127.0.0.1/32
+./build/mini-webserver --port 9001 --name A    # 목적지로 쓸 서버
+curl -x http://127.0.0.1:8080 http://127.0.0.1:9001/api/whoami   # {"name":"A","port":9001}
+curl -x http://127.0.0.1:8080 http://example.com/
+```
+
+- `http://`만 된다. CONNECT 터널(`https://`)은 #32에서 붙는다. 그전까지 CONNECT는 501이다.
+- 목적지에는 origin-form 요청 줄(`GET /경로?쿼리 HTTP/1.1`)과 URI의 `host:port`를 담은
+  `Host`가 간다. `Proxy-Connection`, `Proxy-Authorization`은 빼고 `X-Forwarded-For`는
+  실제 연결 주소로 덮어쓴다.
+- 포워드 요청은 `--route`를 타지 않는다. 둘을 같이 켜도 origin-form만 라우트로 간다.
+- 응답과 실패는 리버스 프록시와 같다: 8 MiB, 3초, 연결 실패·이름 못 찾음은 502, 시간 초과는
+  504, 재시도 없음. 403·502·504 뒤에도 연결은 유지된다.
+- 목적지 이름은 요청마다 `getaddrinfo`(IPv4, 첫 주소)로 찾는다. 블로킹이라 **DNS 시간은
+  3초 deadline 밖**이고, 느린 DNS는 그동안 작업자 하나를 붙잡는다.
+
 ## 요청이 흐르는 코드
 
 ```text
@@ -66,6 +88,7 @@ main (src/main.c)
       → mw_net_listen (src/net.c): socket → SO_REUSEADDR → bind → listen
       → accept → mw_pool_submit (src/pool.c): 연결 큐와 작업자 스레드
       → mw_app_handle_connection → mw_http_read_request (src/http.c): 머리·본문 수신과 검증
+      → absolute-form(포워드 프록시 켬): mw_proxy_forward (src/proxy.c)
       → 라우트 일치: mw_proxy_serve (src/proxy.c)
       → 로컬 동적 경로: serve_dynamic (src/server.c)
       → 그 밖: mw_static_serve (src/static.c)

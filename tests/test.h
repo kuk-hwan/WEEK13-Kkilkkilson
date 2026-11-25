@@ -29,6 +29,7 @@ bool test_config_name(void);
 bool test_config_pool_options(void);
 bool test_config_route(void);
 bool test_config_route_lists(void);
+bool test_config_forward_allow(void);
 bool test_pool_rejects_when_full_and_cleans_up(void);
 bool test_pool_create_rejects_bad_sizes(void);
 bool test_net_read_deadline(void);

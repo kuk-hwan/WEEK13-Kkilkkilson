@@ -13,6 +13,7 @@ bool test_spec_contract(void) {
     CHECK(MW_MAX_UPSTREAM_BYTES == 8388608U);
     CHECK(MW_MAX_ROUTES == 16U);
     CHECK(MW_MAX_BACKENDS == 8U);
+    CHECK(MW_MAX_FORWARD_ALLOW == 16U);
     CHECK(MW_MIN_WORKERS == 1U && MW_MAX_WORKERS == 128U);
     CHECK(MW_MIN_QUEUE_CAPACITY == 1U && MW_MAX_QUEUE_CAPACITY == 4096U);
     CHECK(MW_MAX_SERVER_NAME == 63U);
@@ -33,6 +34,7 @@ typedef int (*path_decoder_t)(mw_slice_t, char *, size_t);
 typedef mw_route_t *(*route_matcher_t)(mw_route_t *, size_t, mw_slice_t);
 typedef const mw_backend_t *(*backend_selector_t)(mw_route_t *);
 typedef int (*upstream_parser_t)(const unsigned char *, size_t, bool, mw_upstream_response_t *);
+typedef bool (*forward_allow_checker_t)(const mw_cidr_t *, size_t, struct in_addr);
 
 #define CHECK_SIGNATURE(function, signature)                                                       \
     _Static_assert(_Generic(&(function), signature: 1, default: 0), #function " signature "        \
@@ -44,3 +46,4 @@ CHECK_SIGNATURE(mw_static_decode_path, path_decoder_t);
 CHECK_SIGNATURE(mw_proxy_match_route, route_matcher_t);
 CHECK_SIGNATURE(mw_proxy_next_backend, backend_selector_t);
 CHECK_SIGNATURE(mw_http_parse_upstream_response, upstream_parser_t);
+CHECK_SIGNATURE(mw_config_forward_allowed, forward_allow_checker_t);
