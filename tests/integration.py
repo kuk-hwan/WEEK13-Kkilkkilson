@@ -1,5 +1,6 @@
 """Process/TCP contract tests; no HTTP framework or external dependency."""
 import argparse
+import contextlib
 import json
 import shutil
 from contextlib import contextmanager
@@ -1256,6 +1257,109 @@ class KeepAliveTests(unittest.TestCase):
         self.assertTrue(match, lines)
         self.assertEqual(match.group(1, 2, 3), ("POST", "/api/echo", "200"))
         self.assertEqual(int(match.group(4)), raw)
+
+
+class RoutingTests(unittest.TestCase):
+    """Several routes and backend lists (docs/spec.md "Reverse Proxy"). Requests send
+    Connection: close so they do not depend on the keep-alive default."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="mini-webserver-routing-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+
+    def backend(self, name):
+        return self.stack.enter_context(running_server(
+            self.root, extra_args=("--name", name, "--workers", "64", "--queue", "256")))
+
+    def proxy(self, *routes):
+        args = ["--workers", "64", "--queue", "256"]
+        for route in routes:
+            args += ["--route", route]
+        return self.stack.enter_context(running_server(self.root, extra_args=args))
+
+    def get(self, port, path):
+        return request(port, (b"GET " + path + b" HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n",))
+
+    def whoami(self, proxy):
+        status, _, body = self.get(proxy, b"/api/whoami")
+        self.assertEqual(status, OK_STATUS)
+        return json.loads(body)["name"]
+
+    def test_two_backends_alternate(self):
+        a, b = self.backend("A"), self.backend("B")
+        proxy = self.proxy(f"/api/=127.0.0.1:{a},127.0.0.1:{b}")
+        self.assertEqual([self.whoami(proxy) for _ in range(4)], ["A", "B", "A", "B"])
+
+    def test_longest_prefix_route_wins_whatever_the_option_order(self):
+        reply = b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n%s"
+        for order in ((0, 1), (1, 0)):
+            with self.subTest(order=order), fake_backend(reply % b"A") as (a, _), \
+                    fake_backend(reply % b"B") as (b, _):
+                routes = [f"/api/=127.0.0.1:{a}", f"/api/admin/=127.0.0.1:{b}"]
+                args = [x for i in order for x in ("--route", routes[i])]
+                with running_server(self.root, extra_args=args) as proxy:
+                    for path, expected in ((b"/api/admin/users", b"B"), (b"/api/admin/", b"B"),
+                                           (b"/api/admin", b"A"),
+                                           (b"/api/users?x=/api/admin/", b"A")):
+                        self.assertEqual(self.get(proxy, path)[2], expected, path)
+
+    def test_prefix_without_slash_stops_at_a_path_segment(self):
+        with fake_backend(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA") as (a, _):
+            proxy = self.proxy(f"/service=127.0.0.1:{a}")
+            for path, routed in ((b"/service", True), (b"/service/x", True),
+                                 (b"/service?q=1", True), (b"/service-other", False),
+                                 (b"/servicex", False)):
+                self.assertEqual(self.get(proxy, path)[2] == b"A", routed, path)
+
+    def test_hundred_concurrent_requests_split_evenly(self):
+        a, b = self.backend("A"), self.backend("B")
+        proxy = self.proxy(f"/api/=127.0.0.1:{a},127.0.0.1:{b}")
+        names, failures = [], []
+        lock = threading.Lock()
+        barrier = threading.Barrier(100)
+
+        def client():
+            try:
+                barrier.wait(timeout=10)
+                name = self.whoami(proxy)
+                with lock:
+                    names.append(name)
+            except Exception as error:  # noqa: BLE001 - reported below
+                with lock:
+                    failures.append(repr(error))
+
+        threads = [threading.Thread(target=client) for _ in range(100)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        self.assertEqual(failures, [])
+        self.assertEqual((names.count("A"), names.count("B")), (50, 50))
+
+    def test_route_and_backend_limits_are_argument_errors(self):
+        def exit_code(*routes):
+            args = [str(BINARY), "--root", str(self.root)]
+            for route in routes:
+                args += ["--route", route]
+            result = subprocess.run(args, capture_output=True, timeout=5)
+            assert_no_sanitizer_errors(result.stderr.decode())
+            return result.returncode
+
+        def backends(count):
+            return ",".join(f"127.0.0.1:{9000 + i}" for i in range(count))
+
+        self.assertEqual(exit_code(*(f"/r{i}/=127.0.0.1:9000" for i in range(17))), 2)
+        self.assertEqual(exit_code(f"/api/={backends(9)}"), 2)
+        self.assertEqual(exit_code(f"/api/={backends(2)},"), 2)
+        self.assertEqual(exit_code("/api/=127.0.0.1:9000,,127.0.0.1:9001"), 2)
+        # Exactly at the limits the server starts.
+        for routes in ([f"/api/={backends(8)}"], [f"/r{i}/=127.0.0.1:9000" for i in range(16)]):
+            args = [x for route in routes for x in ("--route", route)]
+            with running_server(self.root, extra_args=args):
+                pass
 
 
 if __name__ == "__main__":
